@@ -176,8 +176,7 @@ def generate_excel_download(predictions_data, selected_period_key):
         for brand, data in predictions_data.items():
             period_target_key = 'mayTarget' if selected_period_key == 'may' else 'w1Target'
             period_dist_key = 'mayDistribution' if selected_period_key == 'may' else 'w1Distribution'
-            period_name = 'May' if selected_period_key == 'may' else 'Week 1'
-
+            
             dist_data = data[period_dist_key]
             if dist_data:
                 df_dist = pd.DataFrame.from_dict(dist_data, orient='index')
@@ -188,8 +187,8 @@ def generate_excel_download(predictions_data, selected_period_key):
                 df_dist['Percentage'] = df_dist['Percentage'] * 100
                 df_dist = df_dist.sort_values(by='Tonnage', ascending=False)
                 
-                sheet_name = brand.replace('/', '-').replace('\\', '-') # Sanitize sheet name
-                sheet_name = sheet_name[:31] # Excel sheet name limit
+                sheet_name = brand.replace('/', '-').replace('\\', '-')
+                sheet_name = sheet_name[:31]
                 df_dist.to_excel(writer, index=False, sheet_name=sheet_name)
     
     processed_data = output.getvalue()
@@ -209,7 +208,6 @@ if 'brand_targets_agg' not in st.session_state:
     st.session_state.brand_targets_agg = None
 if 'predictions' not in st.session_state:
     st.session_state.predictions = None
-# --- KEY CHANGE: Unifying state for selectors ---
 if 'selected_period' not in st.session_state:
     st.session_state.selected_period = 'may'
 if 'selected_brand' not in st.session_state:
@@ -254,7 +252,6 @@ with tab1:
                     st.session_state.historical_df
                 )
                 st.success("การสร้างการกระจาย SKU เสร็จสมบูรณ์! กรุณาไปที่แท็บ 'Analysis' หรือ 'Results'")
-                # --- KEY CHANGE: Set the unified selected_brand state ---
                 if st.session_state.predictions:
                     st.session_state.selected_brand = next(iter(st.session_state.predictions), None)
             else:
@@ -264,14 +261,12 @@ with tab1:
 def create_period_selector(widget_key):
     period_options = {'may': 'May', 'w1': 'Week 1'}
     period_keys = list(period_options.keys())
-    # Set index based on the unified session state
     try:
         current_period_index = period_keys.index(st.session_state.selected_period)
     except ValueError:
-        current_period_index = 0 # Default to first item if state is somehow invalid
+        current_period_index = 0
         st.session_state.selected_period = period_keys[0]
     
-    # Update the unified session state with the new selection
     st.session_state.selected_period = st.radio(
         "เลือกช่วงเวลา (Select Period):",
         options=period_keys,
@@ -292,17 +287,15 @@ def create_brand_selector(widget_key):
         st.warning("ไม่มีข้อมูลการคาดการณ์สำหรับแบรนด์ใดๆ")
         return None
 
-    # Set index based on the unified session state
     if st.session_state.selected_brand not in brand_list:
          st.session_state.selected_brand = brand_list[0]
     
     try:
         current_brand_index = brand_list.index(st.session_state.selected_brand)
     except ValueError:
-        current_brand_index = 0 # Default to first item
+        current_brand_index = 0
         st.session_state.selected_brand = brand_list[0]
 
-    # Update the unified session state with the new selection
     st.session_state.selected_brand = st.selectbox(
         "เลือกแบรนด์ (Select Brand):", 
         options=brand_list,
@@ -316,7 +309,6 @@ with tab2:
     if not st.session_state.predictions:
         st.info("กรุณาอัปโหลดข้อมูลและสร้างการกระจาย SKU ในแท็บ 'Upload Data' ก่อน")
     else:
-        # --- KEY CHANGE: Use unified selector functions ---
         selected_period_name = create_period_selector("analysis_period_selector")
         
         st.subheader("การกระจายเป้าหมายตามแบรนด์ (Brand Target Distribution)")
@@ -338,7 +330,6 @@ with tab2:
         
         col_brand_sel, col_toggle_sku = st.columns([3,1])
         with col_brand_sel:
-            # --- KEY CHANGE: Use unified selector functions ---
             selected_brand = create_brand_selector("analysis_brand_selector")
         with col_toggle_sku:
              st.session_state.show_all_skus = st.checkbox("แสดง SKU ทั้งหมด (Show All SKUs)", value=st.session_state.show_all_skus, key="show_all_skus_toggle")
@@ -350,7 +341,7 @@ with tab2:
 
             if sku_distribution:
                 df_sku_dist = pd.DataFrame.from_dict(sku_distribution, orient='index').reset_index()
-                df_sku_dist.rename(columns={'index': 'SKU', 'itemName': 'Product Name', 'tonnage': 'Tonnage'}, inplace=True)
+                df_sku_dist.rename(columns={'index': 'SKU', 'itemName': 'Product Name', 'tonnage': 'Tonnage', 'percentage': 'percentage'}, inplace=True)
                 df_sku_dist = df_sku_dist.sort_values(by='Tonnage', ascending=False)
                 
                 display_df_sku = df_sku_dist if st.session_state.show_all_skus else df_sku_dist.head(10)
@@ -367,7 +358,13 @@ with tab2:
                     if len(df_sku_dist) > top_n_pie:
                         others_tonnage = df_sku_dist.iloc[top_n_pie:]['Tonnage'].sum()
                         if others_tonnage > 0.01:
-                            others_row = pd.DataFrame([{'SKU': 'Others', 'Product Name': 'Other SKUs', 'Tonnage': others_tonnage}])
+                            # --- FIX: Create the 'Others' row with all columns to avoid dtype issues ---
+                            others_row = pd.DataFrame([{
+                                'SKU': 'Others', 
+                                'Product Name': 'Other SKUs', 
+                                'Tonnage': others_tonnage, 
+                                'percentage': 0.0
+                            }])
                             df_pie_data = pd.concat([df_pie_data, others_row], ignore_index=True)
 
                     fig_sku_pie = px.pie(df_pie_data, values='Tonnage', names='SKU', 
@@ -379,7 +376,6 @@ with tab3:
     if not st.session_state.predictions:
         st.info("กรุณาอัปโหลดข้อมูลและสร้างการกระจาย SKU ในแท็บ 'Upload Data' ก่อน")
     else:
-        # --- KEY CHANGE: Use unified selector functions ---
         create_period_selector("results_period_selector")
         selected_brand_res = create_brand_selector("results_brand_selector")
 
@@ -398,7 +394,6 @@ with tab3:
                 st.dataframe(df_results, use_container_width=True)
 
         if st.session_state.predictions:
-            # Modified to generate one sheet per brand for the download
             excel_bytes = generate_excel_download(st.session_state.predictions, st.session_state.selected_period)
             st.download_button(
                 label="ดาวน์โหลดผลลัพธ์ทั้งหมดเป็น Excel (Download All Results as Excel)",
