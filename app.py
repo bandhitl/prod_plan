@@ -1,4 +1,4 @@
-# Production Planning Application - English Version
+# Production Planning Application - Complete Fixed Version
 import streamlit as st
 import pandas as pd
 import io
@@ -13,7 +13,6 @@ try:
 except ImportError:
     OPENAI_AVAILABLE = False
     openai = None
-    st.warning("⚠️ OpenAI library not installed - AI Analysis will not be available")
 
 # Configuration
 HISTORICAL_REQUIRED_COLS = ["BRANDPRODUCT", "Item Code", "TON", "Item Name"]
@@ -73,14 +72,21 @@ def process_historical_file(uploaded_file):
             st.error(f"Missing required columns: {', '.join(missing_cols)}")
             return None
         
-        # Clean data
+        # Clean data with proper type conversion
         original_count = len(df)
         df['TON'] = pd.to_numeric(df['TON'], errors='coerce')
         df = df.dropna(subset=['TON'])
         df = df[df['TON'] > 0]
         df = df.dropna(subset=['BRANDPRODUCT', 'Item Code'])
-        df = df[df['BRANDPRODUCT'].astype(str).str.strip() != '']
-        df = df[df['Item Code'].astype(str).str.strip() != '']
+        
+        # Ensure string columns are properly converted
+        df['BRANDPRODUCT'] = df['BRANDPRODUCT'].astype(str).str.strip()
+        df['Item Code'] = df['Item Code'].astype(str).str.strip()
+        df['Item Name'] = df['Item Name'].astype(str).str.strip()
+        
+        # Remove empty strings
+        df = df[df['BRANDPRODUCT'] != '']
+        df = df[df['Item Code'] != '']
         
         st.write(f"📊 **Data Summary:** {len(df):,} valid records from {original_count:,} total rows")
         
@@ -183,15 +189,51 @@ def process_target_file(uploaded_file):
         st.error(f"Error processing target file: {e}")
         return None
 
+def filter_historical_by_month(historical_df, target_month="May"):
+    """Filter historical data by month for proper comparison"""
+    if historical_df is None or historical_df.empty:
+        return historical_df
+    
+    # Look for date columns
+    date_columns = []
+    for col in historical_df.columns:
+        if any(date_word in str(col).lower() for date_word in ['date', 'time', 'month', 'period']):
+            date_columns.append(col)
+    
+    # If we find date columns, try to filter by month
+    if date_columns:
+        for date_col in date_columns:
+            try:
+                # Convert to datetime
+                historical_df[date_col] = pd.to_datetime(historical_df[date_col], errors='coerce')
+                
+                # Filter by month name
+                month_number = {
+                    'january': 1, 'february': 2, 'march': 3, 'april': 4,
+                    'may': 5, 'june': 6, 'july': 7, 'august': 8,
+                    'september': 9, 'october': 10, 'november': 11, 'december': 12
+                }.get(target_month.lower(), 5)  # Default to May
+                
+                filtered_df = historical_df[historical_df[date_col].dt.month == month_number]
+                
+                if len(filtered_df) > 0:
+                    st.info(f"📅 Filtered historical data to {target_month} only: {len(filtered_df):,} records")
+                    return filtered_df
+            except:
+                continue
+    
+    # If no date filtering possible, return original data
+    st.info("📅 Using all historical data (no date filtering applied)")
+    return historical_df
+
 def map_categories_to_brands(category_targets, historical_df):
-    """Map categories to brands"""
+    """Map categories to brands with optimized processing"""
     historical_summary = {}
     if historical_df is not None and not historical_df.empty:
         try:
             hist_summary = historical_df.groupby('BRANDPRODUCT')['TON'].sum()
             historical_summary = hist_summary.to_dict()
         except Exception as e:
-            st.error(f"Error creating historical summary: {e}")
             historical_summary = {}
     
     brand_targets_agg = {}
@@ -271,7 +313,8 @@ def map_categories_to_brands(category_targets, historical_df):
                 'Categories': len(targets['categories'])
             })
         
-        st.dataframe(pd.DataFrame(summary_data), use_container_width=True)
+        summary_df = pd.DataFrame(summary_data)
+        st.dataframe(summary_df, use_container_width=True)
     
     return {}, brand_targets_agg
 
@@ -327,8 +370,383 @@ def predict_sku_distribution(brand_targets_agg, historical_df):
                     'historicalTonnage': historical_sku_tonnage
                 }
     
-    st.success(f"✅ Generated predictions for {len(predictions)} brands")
+    if predictions:
+        st.success(f"✅ Generated predictions for {len(predictions)} brands")
+        
+        # Show prediction summary
+        summary_data = []
+        for brand, pred in predictions.items():
+            historical_tonnage = pred.get('historicalTonnage', 0)
+            growth_may = pred['mayTarget'] / historical_tonnage if historical_tonnage > 0 else 0
+            
+            summary_data.append({
+                'Brand': brand,
+                'SKU Count': pred['skuCount'],
+                'May Target': pred['mayTarget'],
+                'Historical': historical_tonnage,
+                'Growth': f"{growth_may:.1f}x" if historical_tonnage > 0 else "N/A"
+            })
+        
+        summary_df = pd.DataFrame(summary_data)
+        st.dataframe(summary_df, use_container_width=True)
+    
     return predictions, {}
+
+def setup_openai_api():
+    """Setup OpenAI API key"""
+    if not OPENAI_AVAILABLE:
+        return False, "not_installed"
+    
+    if OPENAI_API_KEY and OPENAI_API_KEY != "sk-YOUR-API-KEY-HERE":
+        return True, "environment"
+    else:
+        api_key = st.session_state.get('openai_api_key')
+        if api_key:
+            return True, "user_input"
+    
+    return False, "no_key"
+
+def generate_insight_analysis(brand_targets_agg, predictions, selected_brand=None):
+    """Generate enhanced AI insights with economic data"""
+    
+    has_api_key, source = setup_openai_api()
+    if not has_api_key:
+        return "AI Analysis requires OpenAI API key configuration."
+    
+    try:
+        # Get API key
+        api_key = OPENAI_API_KEY if OPENAI_API_KEY else st.session_state.get('openai_api_key')
+        
+        if not api_key:
+            return "API Key not available."
+        
+        # Prepare detailed analysis data
+        total_may_target = sum(targets['mayTarget'] for targets in brand_targets_agg.values())
+        total_historical = sum(targets.get('historicalTonnage', 0) for targets in brand_targets_agg.values())
+        
+        analysis_data = {
+            "executive_summary": {
+                "total_may_target_tons": round(total_may_target, 2),
+                "total_historical_tons": round(total_historical, 2),
+                "overall_growth_rate": round((total_may_target / total_historical * 100) - 100, 1) if total_historical > 0 else 0,
+                "brand_count": len(brand_targets_agg),
+                "total_sku_count": sum(len(pred.get('mayDistribution', {})) for pred in predictions.values())
+            },
+            "brand_analysis": {}
+        }
+        
+        # Detailed brand analysis
+        for brand, targets in brand_targets_agg.items():
+            historical = targets.get('historicalTonnage', 0)
+            may_target = targets['mayTarget']
+            
+            brand_analysis = {
+                "may_target_tons": round(may_target, 2),
+                "historical_tons": round(historical, 2),
+                "growth_rate": round(((may_target / historical * 100) - 100), 1) if historical > 0 else 0,
+                "market_share_target": round((may_target / total_may_target * 100), 1) if total_may_target > 0 else 0,
+                "category_count": len(targets.get('categories', [])),
+                "risk_level": "HIGH" if (may_target / historical > 3) and historical > 0 else "MEDIUM" if (may_target / historical > 1.5) and historical > 0 else "LOW"
+            }
+            
+            analysis_data["brand_analysis"][brand] = brand_analysis
+        
+        # Enhanced AI prompt
+        prompt = f"""
+        You are a senior production planning analyst for a major PVC pipe and fitting manufacturer operating in Indonesia. 
+        Provide a comprehensive strategic analysis based on the production data and current Indonesian economic conditions for May 2024.
+
+        PRODUCTION DATA ANALYSIS:
+        {json.dumps(analysis_data, indent=2)}
+
+        ANALYSIS REQUIREMENTS:
+        1. **Executive Summary** (with specific numbers):
+           - Overall production targets vs historical performance 
+           - Key growth rates and capacity implications
+           - Critical success factors for achieving {total_may_target:.1f} tons May target
+
+        2. **Market & Economic Context**:
+           - Indonesia's construction industry outlook for May 2024
+           - Infrastructure spending trends affecting PVC demand
+           - Raw material cost implications (PVC resin prices)
+           - Currency impact on material costs and pricing
+
+        3. **Brand Performance Analysis**:
+           - Detailed breakdown of each brand's performance metrics
+           - Risk assessment with specific tonnage figures
+           - Market positioning recommendations
+
+        4. **Operational Recommendations**:
+           - Production line optimization suggestions
+           - Inventory management strategies 
+           - Quality control priorities for high-volume SKUs
+           - Supply chain risk mitigation
+
+        5. **Financial Implications**:
+           - Revenue projections based on targets
+           - Cost structure optimization opportunities
+           - Working capital requirements
+
+        FORMAT REQUIREMENTS:
+        - Use specific numbers and percentages throughout
+        - Include at least 10 quantitative metrics in your analysis
+        - Provide actionable recommendations with measurable outcomes
+        - Structure with clear headers and bullet points
+        - Keep analysis comprehensive but concise (800-1000 words)
+        - Focus on Indonesian market conditions and economic factors
+
+        Provide your analysis in English with a professional, data-driven tone.
+        """
+        
+        # Call OpenAI API
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key)
+        
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "You are a senior production planning analyst with expertise in Indonesian manufacturing and economic conditions."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=2000,
+            temperature=0.3
+        )
+        
+        return response.choices[0].message.content
+        
+    except Exception as e:
+        return f"Error generating analysis: {str(e)}"
+
+def display_insights_section(brand_targets_agg, predictions, selected_brand):
+    """Display enhanced AI insights section"""
+    
+    st.subheader("🤖 AI Strategic Analysis")
+    
+    # Check OpenAI availability
+    if not OPENAI_AVAILABLE:
+        st.error("❌ AI Analysis feature not available")
+        return
+    
+    # Check API Key availability
+    has_api_key, source = setup_openai_api()
+    
+    if has_api_key:
+        analyze_button = st.button("🔍 Generate Strategic Analysis", type="primary", use_container_width=True)
+    else:
+        st.warning("⚠️ AI Analysis requires configuration")
+        
+        with st.expander("🔧 Setup Instructions", expanded=True):
+            st.markdown("**For Render Deployment:**")
+            st.markdown("Add `OPENAI_API_KEY` in Environment Variables")
+            
+            st.markdown("**Temporary Setup:**")
+            
+            if 'openai_api_key' not in st.session_state:
+                st.session_state.openai_api_key = ""
+            
+            api_key = st.text_input(
+                "OpenAI API Key:",
+                value=st.session_state.openai_api_key,
+                type="password"
+            )
+            st.session_state.openai_api_key = api_key
+            
+        analyze_button = st.button("🔍 Generate Strategic Analysis", type="primary", use_container_width=True)
+    
+    if analyze_button:
+        with st.spinner("🧠 Analyzing production data and market conditions..."):
+            insights = generate_insight_analysis(brand_targets_agg, predictions, selected_brand)
+            
+            if insights and "Error" not in insights:
+                st.success("✅ Strategic analysis completed!")
+                
+                st.markdown("### 📊 Strategic Production Analysis")
+                
+                # Display formatted analysis
+                with st.container():
+                    st.markdown(insights)
+                
+                # Save to session state
+                st.session_state.ai_insights = insights
+                
+                st.divider()
+                
+                # Download button
+                col1, col2, col3 = st.columns([1, 2, 1])
+                with col2:
+                    st.download_button(
+                        label="📥 Download Strategic Analysis Report",
+                        data=insights,
+                        file_name=f"strategic_analysis_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                        mime="text/plain",
+                        use_container_width=True
+                    )
+            else:
+                st.error("❌ Unable to generate analysis at this time")
+    
+    # Show saved analysis if available
+    if st.session_state.get('ai_insights'):
+        st.divider()
+        st.markdown("### 📈 Latest Strategic Analysis")
+        with st.expander("📋 View Complete Report", expanded=True):
+            st.markdown(st.session_state.ai_insights)
+
+def create_executive_summary(brand_targets_agg, predictions):
+    """Create executive summary for the analysis"""
+    
+    summary_data = {
+        "total_brands": len(brand_targets_agg),
+        "total_skus": sum(len(pred.get('mayDistribution', {})) for pred in predictions.values()),
+        "may_total": sum(targets['mayTarget'] for targets in brand_targets_agg.values()),
+        "w1_total": sum(targets['w1Target'] for targets in brand_targets_agg.values()),
+        "historical_total": sum(targets.get('historicalTonnage', 0) for targets in brand_targets_agg.values()),
+    }
+    
+    # Calculate growth
+    if summary_data["historical_total"] > 0:
+        may_growth = summary_data["may_total"] / summary_data["historical_total"]
+        w1_growth = summary_data["w1_total"] / summary_data["historical_total"]
+    else:
+        may_growth = w1_growth = 0
+    
+    # Show Executive Summary
+    st.markdown("### 📋 Executive Summary")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("🏭 Brands", summary_data["total_brands"])
+    with col2:
+        st.metric("📦 SKUs", summary_data["total_skus"])
+    with col3:
+        st.metric("🎯 May Target", f"{summary_data['may_total']:.1f} tons")
+    with col4:
+        st.metric("📅 W1 Target", f"{summary_data['w1_total']:.1f} tons")
+    
+    col5, col6, col7, col8 = st.columns(4)
+    with col5:
+        st.metric("📈 Historical", f"{summary_data['historical_total']:.1f} tons")
+    with col6:
+        st.metric("📊 May Growth", f"{may_growth:.1f}x")
+    with col7:
+        st.metric("📈 W1 Growth", f"{w1_growth:.1f}x")
+    with col8:
+        risk_level = "🔴 High" if may_growth > 5 or w1_growth > 5 else "🟡 Medium" if may_growth > 3 or w1_growth > 3 else "🟢 Low"
+        st.metric("⚠️ Risk Level", risk_level)
+    
+    return summary_data
+
+def create_period_selector(widget_key):
+    """Create period selector widget"""
+    period_options = {'may': 'May 📅', 'w1': 'Week 1 📆'}
+    period_keys = list(period_options.keys())
+    try:
+        current_period_index = period_keys.index(st.session_state.selected_period)
+    except ValueError:
+        current_period_index = 0
+        st.session_state.selected_period = period_keys[0]
+    
+    st.session_state.selected_period = st.radio(
+        "Select Period:",
+        options=period_keys,
+        format_func=lambda x: period_options[x],
+        horizontal=True,
+        index=current_period_index,
+        key=widget_key
+    )
+    return period_options[st.session_state.selected_period]
+
+def create_brand_selector(widget_key):
+    """Create brand selector widget"""
+    if not st.session_state.predictions:
+        return None
+        
+    brand_list = list(st.session_state.predictions.keys())
+    if not brand_list:
+        st.warning("No prediction data available for any brand")
+        return None
+
+    if st.session_state.selected_brand not in brand_list:
+         st.session_state.selected_brand = brand_list[0] if brand_list else None
+    
+    try:
+        current_brand_index = brand_list.index(st.session_state.selected_brand) if st.session_state.selected_brand else 0
+    except ValueError:
+        current_brand_index = 0
+        st.session_state.selected_brand = brand_list[0] if brand_list else None
+
+    st.session_state.selected_brand = st.selectbox(
+        "Select Brand:", 
+        options=brand_list,
+        index=current_brand_index,
+        key=widget_key
+    )
+    return st.session_state.selected_brand
+
+def generate_excel_download(predictions_data, selected_period_key):
+    """Generate Excel file for download"""
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        # Create summary sheet
+        summary_data = []
+        for brand, data in predictions_data.items():
+            period_dist_key = 'mayDistribution' if selected_period_key == 'may' else 'w1Distribution'
+            target_key = 'mayTarget' if selected_period_key == 'may' else 'w1Target'
+            
+            summary_data.append({
+                'Brand': brand,
+                'Target (Tons)': data[target_key],
+                'Historical (Tons)': data.get('historicalTonnage', 0),
+                'SKU Count': len(data.get(period_dist_key, {})),
+                'Categories': ', '.join(data.get('categories', []))
+            })
+        
+        summary_df = pd.DataFrame(summary_data)
+        summary_df.to_excel(writer, index=False, sheet_name='Summary')
+        
+        # Create sheet for each brand
+        for brand, data in predictions_data.items():
+            period_dist_key = 'mayDistribution' if selected_period_key == 'may' else 'w1Distribution'
+            dist_data = data.get(period_dist_key)
+
+            if dist_data:
+                df_dist = pd.DataFrame.from_dict(dist_data, orient='index').reset_index()
+                
+                rename_map = {
+                    'index': 'SKU',
+                    'itemName': 'Product Name',
+                    'tonnage': 'Predicted Tonnage',
+                    'percentage': 'Percentage (%)',
+                    'historicalTonnage': 'Historical Tonnage'
+                }
+                
+                df_dist.rename(columns=rename_map, inplace=True)
+                
+                if 'Percentage (%)' in df_dist.columns:
+                    df_dist['Percentage (%)'] = (df_dist['Percentage (%)'] * 100).round(2)
+                
+                if 'Predicted Tonnage' in df_dist.columns:
+                    df_dist['Predicted Tonnage'] = df_dist['Predicted Tonnage'].round(4)
+                
+                if 'Historical Tonnage' in df_dist.columns:
+                    df_dist['Historical Tonnage'] = df_dist['Historical Tonnage'].round(4)
+                
+                df_dist = df_dist.sort_values(by='Predicted Tonnage', ascending=False)
+                
+                # Add Growth Ratio column
+                if 'Historical Tonnage' in df_dist.columns and 'Predicted Tonnage' in df_dist.columns:
+                    df_dist['Growth Ratio'] = (df_dist['Predicted Tonnage'] / df_dist['Historical Tonnage']).round(2)
+                    df_dist['Growth Ratio'] = df_dist['Growth Ratio'].replace([float('inf'), -float('inf')], 'N/A')
+                
+                final_columns_order = ['SKU', 'Product Name', 'Predicted Tonnage', 'Historical Tonnage', 'Growth Ratio', 'Percentage (%)']
+                output_df = df_dist.reindex(columns=[col for col in final_columns_order if col in df_dist.columns])
+                
+                sheet_name = brand.replace('/', '-').replace('\\', '-')
+                sheet_name = sheet_name[:31]
+                
+                output_df.to_excel(writer, index=False, sheet_name=sheet_name)
+    
+    processed_data = output.getvalue()
+    return processed_data
 
 # Streamlit App
 st.set_page_config(layout="wide", page_title="Production Planning App")
@@ -354,7 +772,7 @@ with tab1:
         if historical_file:
             st.session_state.historical_df = process_historical_file(historical_file)
             if st.session_state.historical_df is not None:
-                st.success(f"✅ Historical data loaded: '{historical_file.name}'")
+                st.success("✅ Historical data loaded successfully")
 
     with col2:
         st.subheader("🎯 Target Data")
@@ -363,10 +781,7 @@ with tab1:
         if target_file:
             st.session_state.category_targets = process_target_file(target_file)
             if st.session_state.category_targets:
-                st.success(f"✅ Target data loaded: '{target_file.name}'")
-                if st.session_state.historical_df is not None:
-                    _, st.session_state.brand_targets_agg = map_categories_to_brands(
-                        st.session_state.category_targets, st.session_state.historical_df)
+                st.success("✅ Target data loaded successfully")
 
     st.divider()
     
@@ -374,35 +789,277 @@ with tab1:
     generate_disabled = not (st.session_state.historical_df is not None and st.session_state.category_targets is not None)
     
     if st.button("🚀 Generate SKU Distribution", disabled=generate_disabled, type="primary", use_container_width=True):
-        with st.spinner("Processing..."):
+        with st.spinner("Processing data and generating predictions..."):
             try:
-                if st.session_state.brand_targets_agg is None:
-                    _, st.session_state.brand_targets_agg = map_categories_to_brands(
-                        st.session_state.category_targets, st.session_state.historical_df)
-
-                st.session_state.predictions, _ = predict_sku_distribution(
-                    st.session_state.brand_targets_agg, st.session_state.historical_df)
+                # Filter historical data by month for proper comparison
+                filtered_historical = filter_historical_by_month(st.session_state.historical_df, "May")
                 
-                if st.session_state.predictions:
-                    st.success("🎉 SKU distribution generated! Go to Analysis or Results tab")
-                    st.balloons()
+                # Map categories to brands
+                _, st.session_state.brand_targets_agg = map_categories_to_brands(
+                    st.session_state.category_targets, filtered_historical)
+                
+                if st.session_state.brand_targets_agg:
+                    # Generate predictions
+                    st.session_state.predictions, _ = predict_sku_distribution(
+                        st.session_state.brand_targets_agg, filtered_historical)
+                    
+                    if st.session_state.predictions:
+                        st.success("🎉 SKU distribution generated successfully!")
+                        st.balloons()
+                    else:
+                        st.warning("⚠️ No predictions could be generated")
+                else:
+                    st.error("❌ No brand mappings created")
                     
             except Exception as e:
-                st.error(f"❌ Error: {e}")
+                st.error(f"❌ Processing error: {str(e)}")
 
 with tab2:
     st.header("📊 Analysis")
     if not st.session_state.predictions:
         st.info("📝 Please upload data and generate SKU distribution first")
     else:
-        st.write("Analysis features will be implemented here")
+        # Executive Summary
+        create_executive_summary(st.session_state.brand_targets_agg, st.session_state.predictions)
+        
+        st.divider()
+        
+        selected_period_name = create_period_selector("analysis_period_selector")
+        
+        st.subheader("📈 Brand Target Distribution")
+        if st.session_state.brand_targets_agg:
+            brand_target_data = []
+            target_key = 'mayTarget' if st.session_state.selected_period == 'may' else 'w1Target'
+            for brand, targets in st.session_state.brand_targets_agg.items():
+                if targets[target_key] > 0:
+                    brand_target_data.append({'Brand': brand, 'Tonnage': targets[target_key]})
+            
+            if brand_target_data:
+                df_brand_targets = pd.DataFrame(brand_target_data)
+                fig_brand_targets = px.bar(
+                    df_brand_targets, 
+                    x='Brand', 
+                    y='Tonnage', 
+                    title=f"Brand Targets for {selected_period_name}",
+                    labels={'Tonnage':'Tons'},
+                    color='Tonnage',
+                    color_continuous_scale='Blues'
+                )
+                st.plotly_chart(fig_brand_targets, use_container_width=True)
+
+        st.divider()
+        st.subheader("🎯 SKU Distribution")
+        
+        col_brand_sel, col_toggle_sku = st.columns([3,1])
+        with col_brand_sel:
+            selected_brand = create_brand_selector("analysis_brand_selector")
+        with col_toggle_sku:
+            show_all_skus = st.checkbox("Show All SKUs", value=False, key="show_all_skus_toggle")
+
+        if selected_brand:
+            brand_data = st.session_state.predictions.get(selected_brand)
+            dist_key = 'mayDistribution' if st.session_state.selected_period == 'may' else 'w1Distribution'
+            sku_distribution = brand_data.get(dist_key)
+
+            if sku_distribution:
+                df_sku_dist = pd.DataFrame.from_dict(sku_distribution, orient='index').reset_index()
+                df_sku_dist.rename(columns={
+                    'index': 'SKU', 
+                    'itemName': 'Product Name', 
+                    'tonnage': 'Predicted Tonnage', 
+                    'percentage': 'Percentage',
+                    'historicalTonnage': 'Historical Tonnage'
+                }, inplace=True)
+                df_sku_dist = df_sku_dist.sort_values(by='Predicted Tonnage', ascending=False)
+                
+                # Add Growth Ratio column
+                if 'Historical Tonnage' in df_sku_dist.columns:
+                    df_sku_dist['Growth Ratio'] = (df_sku_dist['Predicted Tonnage'] / df_sku_dist['Historical Tonnage']).round(2)
+                    df_sku_dist['Growth Ratio'] = df_sku_dist['Growth Ratio'].replace([float('inf')], 999.0)
+                
+                display_df_sku = df_sku_dist if show_all_skus else df_sku_dist.head(15)
+                
+                if not display_df_sku.empty:
+                    # Show statistics summary
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric("SKU Count", len(df_sku_dist))
+                    with col2:
+                        total_target = df_sku_dist['Predicted Tonnage'].sum()
+                        st.metric("Total Target", f"{total_target:.1f} tons")
+                    with col3:
+                        total_historical = df_sku_dist['Historical Tonnage'].sum()
+                        st.metric("Total Historical", f"{total_historical:.1f} tons")
+                    with col4:
+                        overall_growth = total_target / total_historical if total_historical > 0 else 0
+                        st.metric("Growth", f"{overall_growth:.1f}x")
+                    
+                    # Bar chart
+                    fig_sku_bar = px.bar(
+                        display_df_sku, 
+                        y='SKU', 
+                        x='Predicted Tonnage', 
+                        orientation='h',
+                        title=f"SKU Distribution for {selected_brand} ({selected_period_name})",
+                        labels={'Predicted Tonnage':'Tons'}, 
+                        hover_data=['Product Name', 'Historical Tonnage', 'Growth Ratio'],
+                        color='Growth Ratio',
+                        color_continuous_scale='RdYlGn_r'
+                    )
+                    fig_sku_bar.update_layout(yaxis={'categoryorder':'total ascending'}, height=600)
+                    st.plotly_chart(fig_sku_bar, use_container_width=True)
+
+                    # Pie chart (Top SKUs)
+                    top_n_pie = 8
+                    df_pie_data = df_sku_dist.head(top_n_pie).copy()
+                    if len(df_sku_dist) > top_n_pie:
+                        others_tonnage = df_sku_dist.iloc[top_n_pie:]['Predicted Tonnage'].sum()
+                        if others_tonnage > 0.01:
+                            others_row = pd.DataFrame([{
+                                'SKU': 'Others', 
+                                'Product Name': f'Others ({len(df_sku_dist) - top_n_pie} SKUs)', 
+                                'Predicted Tonnage': others_tonnage, 
+                                'Percentage': 0.0
+                            }])
+                            df_pie_data = pd.concat([df_pie_data, others_row], ignore_index=True)
+
+                    fig_sku_pie = px.pie(
+                        df_pie_data, 
+                        values='Predicted Tonnage', 
+                        names='SKU', 
+                        title=f"Top SKU Proportion for {selected_brand} ({selected_period_name})", 
+                        hover_data=['Product Name']
+                    )
+                    st.plotly_chart(fig_sku_pie, use_container_width=True)
+                    
+                    # Data table
+                    st.subheader("📋 SKU Details")
+                    display_columns = ['SKU', 'Product Name', 'Predicted Tonnage', 'Historical Tonnage', 'Growth Ratio', 'Percentage']
+                    display_table = display_df_sku[display_columns].copy()
+                    display_table['Predicted Tonnage'] = display_table['Predicted Tonnage'].round(3)
+                    display_table['Historical Tonnage'] = display_table['Historical Tonnage'].round(3)
+                    display_table['Percentage'] = (display_table['Percentage'] * 100).round(2)
+                    
+                    st.dataframe(display_table, use_container_width=True)
+            else:
+                st.warning(f"No SKU distribution data for {selected_brand} in {selected_period_name}")
+
+        st.divider()
+        
+        # AI Insights Analysis Section
+        if st.session_state.brand_targets_agg and st.session_state.predictions:
+            display_insights_section(
+                st.session_state.brand_targets_agg, 
+                st.session_state.predictions, 
+                selected_brand
+            )
 
 with tab3:
-    st.header("📋 Results")
+    st.header("📋 Production Plan Results")
     if not st.session_state.predictions:
         st.info("📝 Please upload data and generate SKU distribution first")
     else:
-        st.write("Results features will be implemented here")
+        selected_period_name_results = create_period_selector("results_period_selector")
+        selected_brand_res = create_brand_selector("results_brand_selector")
+
+        if selected_brand_res:
+            brand_data_res = st.session_state.predictions.get(selected_brand_res)
+            dist_key_res = 'mayDistribution' if st.session_state.selected_period == 'may' else 'w1Distribution'
+            sku_distribution_res = brand_data_res.get(dist_key_res)
+
+            if sku_distribution_res:
+                st.subheader(f"📊 Production Plan: {selected_brand_res} - {selected_period_name_results}")
+                
+                df_results = pd.DataFrame.from_dict(sku_distribution_res, orient='index').reset_index()
+                df_results.rename(columns={
+                    'index': 'SKU Code', 
+                    'itemName': 'Product Name', 
+                    'tonnage': 'Production Plan (tons)', 
+                    'percentage': 'Proportion (%)',
+                    'historicalTonnage': 'Historical Data (tons)'
+                }, inplace=True)
+                
+                # Calculate Growth Ratio
+                df_results['Growth Ratio'] = (df_results['Production Plan (tons)'] / df_results['Historical Data (tons)']).round(2)
+                df_results['Growth Ratio'] = df_results['Growth Ratio'].replace([float('inf')], 999.0)
+                
+                # Format data
+                df_results['Proportion (%)'] = (df_results['Proportion (%)'] * 100).round(2)
+                df_results['Production Plan (tons)'] = df_results['Production Plan (tons)'].round(3)
+                df_results['Historical Data (tons)'] = df_results['Historical Data (tons)'].round(3)
+                
+                # Sort by production plan
+                df_results = df_results.sort_values(by='Production Plan (tons)', ascending=False)
+                
+                # Show summary statistics
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("🎯 Total Target", f"{df_results['Production Plan (tons)'].sum():.1f} tons")
+                with col2:
+                    st.metric("📈 Historical Total", f"{df_results['Historical Data (tons)'].sum():.1f} tons")
+                with col3:
+                    total_growth = df_results['Production Plan (tons)'].sum() / df_results['Historical Data (tons)'].sum()
+                    st.metric("📊 Overall Growth", f"{total_growth:.1f}x")
+                with col4:
+                    st.metric("🔢 SKU Count", len(df_results))
+                
+                # Data filtering
+                filter_option = st.selectbox(
+                    "Filter Data:",
+                    ["All", "Production > 1 ton", "Production > 0.5 ton", "Growth > 3x", "Top 20 SKU"]
+                )
+                
+                if filter_option == "Production > 1 ton":
+                    df_display = df_results[df_results['Production Plan (tons)'] > 1]
+                elif filter_option == "Production > 0.5 ton":
+                    df_display = df_results[df_results['Production Plan (tons)'] > 0.5]
+                elif filter_option == "Growth > 3x":
+                    df_display = df_results[df_results['Growth Ratio'] > 3]
+                elif filter_option == "Top 20 SKU":
+                    df_display = df_results.head(20)
+                else:
+                    df_display = df_results
+                
+                # Show table
+                st.dataframe(
+                    df_display[['SKU Code', 'Product Name', 'Production Plan (tons)', 'Historical Data (tons)', 'Growth Ratio', 'Proportion (%)']],
+                    use_container_width=True,
+                    height=400
+                )
+                
+                # Show warnings for high growth SKUs
+                high_growth_skus = df_results[df_results['Growth Ratio'] > 5]
+                if len(high_growth_skus) > 0:
+                    st.warning(f"⚠️ **Found SKUs with very high growth ({len(high_growth_skus)} items):**")
+                    st.dataframe(
+                        high_growth_skus[['SKU Code', 'Product Name', 'Production Plan (tons)', 'Growth Ratio']].head(10),
+                        use_container_width=True
+                    )
+            else:
+                st.warning(f"No results data for {selected_brand_res}")
+
+        # Excel download section
+        if st.session_state.predictions:
+            st.divider()
+            st.subheader("📥 Download Results")
+            
+            col_download1, col_download2 = st.columns(2)
+            
+            with col_download1:
+                excel_bytes = generate_excel_download(st.session_state.predictions, st.session_state.selected_period)
+                st.download_button(
+                    label="📊 Download Complete Results as Excel",
+                    data=excel_bytes,
+                    file_name=f"production_plan_{st.session_state.selected_period}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary"
+                )
+            
+            with col_download2:
+                st.info("**Excel file contains:**\n"
+                       "- Summary: Overview of all brands\n"  
+                       "- Individual Brand sheets: Detailed SKU data with comparisons\n"
+                       "- Growth Ratio: Growth rate for each SKU")
 
 st.divider()
 st.markdown("🏭 **Production Planning App** | 📊 Precise SKU-level production planning")
