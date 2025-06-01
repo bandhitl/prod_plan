@@ -170,26 +170,47 @@ def predict_sku_distribution(brand_targets_agg, historical_df):
 
 
 def generate_excel_download(predictions_data, selected_period_key):
-    """Generates an Excel file for download from the predictions."""
+    """
+    Generates an Excel file for download from the predictions.
+    This is a robust version that handles column names safely.
+    """
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         for brand, data in predictions_data.items():
-            period_target_key = 'mayTarget' if selected_period_key == 'may' else 'w1Target'
             period_dist_key = 'mayDistribution' if selected_period_key == 'may' else 'w1Distribution'
-            
-            dist_data = data[period_dist_key]
+            dist_data = data.get(period_dist_key)
+
             if dist_data:
-                df_dist = pd.DataFrame.from_dict(dist_data, orient='index')
-                df_dist.index.name = 'SKU'
-                df_dist.reset_index(inplace=True)
-                df_dist = df_dist[['SKU', 'itemName', 'tonnage', 'percentage']]
-                df_dist.columns = ['SKU', 'Product Name', 'Tonnage', 'Percentage']
-                df_dist['Percentage'] = df_dist['Percentage'] * 100
+                df_dist = pd.DataFrame.from_dict(dist_data, orient='index').reset_index()
+                
+                # Define expected columns and their new names for the Excel file
+                rename_map = {
+                    'index': 'SKU',
+                    'itemName': 'Product Name',
+                    'tonnage': 'Tonnage',
+                    'percentage': 'Percentage'
+                }
+                
+                # Rename columns that exist in the DataFrame
+                df_dist.rename(columns=rename_map, inplace=True)
+                
+                # Format the 'Percentage' column before ordering
+                if 'Percentage' in df_dist.columns:
+                    df_dist['Percentage'] = (df_dist['Percentage'] * 100).round(2)
+                
                 df_dist = df_dist.sort_values(by='Tonnage', ascending=False)
                 
+                # Define the final order of columns for the output
+                final_columns_order = ['SKU', 'Product Name', 'Tonnage', 'Percentage']
+                
+                # Filter DataFrame to only include columns that exist after renaming, in the desired order
+                output_df = df_dist.reindex(columns=final_columns_order)
+                
+                # Sanitize sheet name for Excel limitations
                 sheet_name = brand.replace('/', '-').replace('\\', '-')
                 sheet_name = sheet_name[:31]
-                df_dist.to_excel(writer, index=False, sheet_name=sheet_name)
+                
+                output_df.to_excel(writer, index=False, sheet_name=sheet_name)
     
     processed_data = output.getvalue()
     return processed_data
@@ -358,7 +379,6 @@ with tab2:
                     if len(df_sku_dist) > top_n_pie:
                         others_tonnage = df_sku_dist.iloc[top_n_pie:]['Tonnage'].sum()
                         if others_tonnage > 0.01:
-                            # --- FIX: Create the 'Others' row with all columns to avoid dtype issues ---
                             others_row = pd.DataFrame([{
                                 'SKU': 'Others', 
                                 'Product Name': 'Other SKUs', 
