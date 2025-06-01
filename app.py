@@ -3,11 +3,33 @@ import pandas as pd
 import io
 import plotly.express as px
 import plotly.graph_objects as go
-import openai
 import json
+
+# Try to import openai, handle if not installed
+try:
+    import openai
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
+    openai = None  # Set to None to prevent undefined variable errors
+    st.warning("⚠️ OpenAI library ไม่ได้ติดตั้ง - AI Analysis จะไม่สามารถใช้งานได้")
 
 # --- Configuration and Constants ---
 HISTORICAL_REQUIRED_COLS = ["BRANDPRODUCT", "Item Code", "TON", "Item Name"]
+
+# Check if we have API key from environment or secrets
+OPENAI_API_KEY = None
+try:
+    import os
+    OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+    if not OPENAI_API_KEY:
+        # Try Streamlit secrets
+        try:
+            OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY")
+        except:
+            pass
+except:
+    pass
 
 # --- Embedded Historical Data ---
 def get_embedded_historical_data():
@@ -129,23 +151,29 @@ def display_embedded_data_summary():
 
 def setup_openai_api():
     """Setup OpenAI API key"""
+    if not OPENAI_AVAILABLE:
+        return False, "not_installed"
+    
     if OPENAI_API_KEY and OPENAI_API_KEY != "sk-YOUR-API-KEY-HERE":
         openai.api_key = OPENAI_API_KEY
-        return True
+        return True, "environment"
     else:
         # Fallback to session state if hardcoded key is not set
         api_key = st.session_state.get('openai_api_key')
         if api_key:
             openai.api_key = api_key
-            return True
-    return False
+            return True, "user_input"
+    return False, "no_key"
 
 def generate_insight_analysis(brand_targets_agg, predictions, selected_brand=None):
     """Generate AI-powered insights using OpenAI"""
     
     has_api_key, source = setup_openai_api()
     if not has_api_key:
-        st.error("❌ ไม่พบ OpenAI API Key กรุณาตั้งค่าใน Streamlit Secrets หรือป้อนด้วยตนเอง")
+        if source == "not_installed":
+            st.error("❌ OpenAI library ไม่ได้ติดตั้ง")
+        else:
+            st.error("❌ ไม่พบ OpenAI API Key กรุณาตั้งค่าใน Environment Variables หรือป้อนด้วยตนเอง")
         return None
     
     try:
@@ -194,14 +222,14 @@ def generate_insight_analysis(brand_targets_agg, predictions, selected_brand=Non
         
         # สร้าง prompt สำหรับ OpenAI
         prompt = f"""
-        คุณเป็นผู้เชี่ยวชาญด้านการวิเคราะห์แผนการผลิตสำหรับบริษัทผลิตท่อ PVC และอุปกรณ์ฟิตติ้ง
+        คุณเป็นผู้เชี่ยวชาญด้านการวิเคราะหืแผนการผลิตสำหรับบริษัทผลิตท่อ PVC และอุปกรณ์ฟิตติ้ง
 
-        ข้อมูลการวิเคราะห์:
+        ข้อมูลการวิเคราะหื:
         {json.dumps(analysis_data, ensure_ascii=False, indent=2)}
 
-        กรุณาวิเคราะห์และให้ข้อมูล Insights ในประเด็นต่อไปนี้:
+        กรุณาวิเคราะหืและให้ข้อมูล Insights ในประเด็นต่อไปนี้:
 
-        1. **การเติบโตโดยรวม**: วิเคราะห์การเติบโตของแต่ละ Brand และโอกาสความเสี่ยง
+        1. **การเติบโตโดยรวม**: วิเคราะหืการเติบโตของแต่ละ Brand และโอกาสความเสี่ยง
         2. **การกระจายตัว**: ประเมินการกระจายเป้าหมายระหว่าง Brand ต่างๆ 
         3. **ข้อเสนะแนะเชิงกลยุทธ์**: แนะนำการปรับปรุงการผลิตและการจัดการทรัพยากร
         4. **การเตรียมความพร้อม**: สิ่งที่ควรเตรียมการเพื่อให้บรรลุเป้าหมาย
@@ -214,7 +242,7 @@ def generate_insight_analysis(brand_targets_agg, predictions, selected_brand=Non
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "คุณเป็นผู้เชี่ยวชาญด้านการวิเคราะห์การผลิตและแผนธุรกิจ"},
+                {"role": "system", "content": "คุณเป็นผู้เชี่ยวชาญด้านการวิเคราะหืการผลิตและแผนธุรกิจ"},
                 {"role": "user", "content": prompt}
             ],
             max_tokens=1500,
@@ -232,23 +260,48 @@ def display_insights_section(brand_targets_agg, predictions, selected_brand):
     
     st.subheader("🤖 AI Insights Analysis")
     
+    # ตรวจสอบว่า OpenAI library ติดตั้งหรือไม่
+    if not OPENAI_AVAILABLE:
+        st.error("❌ OpenAI library ไม่ได้ติดตั้ง")
+        st.markdown("""
+        **📦 วิธีแก้ไข:**
+        
+        **สำหรับ Render:**
+        1. สร้างไฟล์ `requirements.txt` ในโฟลเดอร์โปรเจค
+        2. เพิ่มบรรทัดนี้:
+        ```
+        streamlit
+        pandas
+        plotly
+        openai
+        ```
+        3. Commit และ push ไป GitHub
+        4. Render จะติดตั้งอัตโนมัติ
+        
+        **สำหรับ Local:**
+        ```bash
+        pip install openai
+        ```
+        """)
+        return
+    
     # ตรวจสอบ API Key
     has_api_key, source = setup_openai_api()
     
     if has_api_key and source == "environment":
         # ถ้ามี API Key ใน Environment Variables (Render)
         st.success("✅ OpenAI API Key พร้อมใช้งาน (จาก Environment Variables)")
-        analyze_button = st.button("🔍 เริ่มวิเคราะห์ด้วย AI", type="primary", use_container_width=True)
+        analyze_button = st.button("🔍 เริ่มวิเคราะหืด้วย AI", type="primary", use_container_width=True)
         
     elif has_api_key and source == "secrets":
         # ถ้ามี API Key ใน Streamlit Secrets
         st.success("✅ OpenAI API Key พร้อมใช้งาน (จาก Streamlit Secrets)")
-        analyze_button = st.button("🔍 เริ่มวิเคราะห์ด้วย AI", type="primary", use_container_width=True)
+        analyze_button = st.button("🔍 เริ่มวิเคราะหืด้วย AI", type="primary", use_container_width=True)
             
     elif has_api_key and source == "user_input":
         # ถ้ามี API Key จากผู้ใช้
         st.info("🔑 กำลังใช้ API Key ที่ระบุไว้")
-        analyze_button = st.button("🔍 เริ่มวิเคราะห์ด้วย AI", type="primary", use_container_width=True)
+        analyze_button = st.button("🔍 เริ่มวิเคราะหืด้วย AI", type="primary", use_container_width=True)
         
     else:
         # ไม่มี API Key
@@ -290,27 +343,30 @@ def display_insights_section(brand_targets_agg, predictions, selected_brand):
             )
             st.session_state.openai_api_key = api_key
             
-        analyze_button = st.button("🔍 เริ่มวิเคราะห์ด้วย AI", type="primary", use_container_width=True)
+        analyze_button = st.button("🔍 เริ่มวิเคราะหืด้วย AI", type="primary", use_container_width=True)
     
     if analyze_button:
         has_api_key, source = setup_openai_api()
         if not has_api_key:
-            st.error("❌ กรุณาตั้งค่า OpenAI API Key ก่อน")
+            if source == "not_installed":
+                st.error("❌ กรุณาติดตั้ง OpenAI library ก่อน")
+            else:
+                st.error("❌ กรุณาตั้งค่า OpenAI API Key ก่อน")
         else:
-            with st.spinner("🤖 AI กำลังวิเคราะห์ข้อมูลเชิงลึก..."):
+            with st.spinner("🤖 AI กำลังวิเคราะหืข้อมูลเชิงลึก..."):
                 insights = generate_insight_analysis(brand_targets_agg, predictions, selected_brand)
                 
                 if insights:
-                    st.success("✅ การวิเคราะห์เสร็จสมบูรณ์!")
+                    st.success("✅ การวิเคราะหืเสร็จสมบูรณ์!")
                     
-                    # แสดงผลการวิเคราะห์
+                    # แสดงผลการวิเคราะหื
                     st.markdown("### 📊 AI Insights & Strategic Recommendations")
                     
                     # แบ่งการแสดงผลเป็นกรอบสวยๆ
                     with st.container():
                         st.markdown(insights)
                     
-                    # เก็บผลการวิเคราะห์ใน session state
+                    # เก็บผลการวิเคราะหืใน session state
                     st.session_state.ai_insights = insights
                     
                     st.divider()
@@ -326,17 +382,17 @@ def display_insights_section(brand_targets_agg, predictions, selected_brand):
                             use_container_width=True
                         )
     
-    # แสดงผลการวิเคราะห์ที่เก็บไว้ (ถ้ามี)
+    # แสดงผลการวิเคราะหืที่เก็บไว้ (ถ้ามี)
     if st.session_state.get('ai_insights'):
         st.divider()
-        st.markdown("### 📈 รายงานการวิเคราะห์ล่าสุด")
+        st.markdown("### 📈 รายงานการวิเคราะหืล่าสุด")
         with st.expander("📋 ดูรายงาน AI Analysis ฉบับเต็ม", expanded=True):
             st.markdown(st.session_state.ai_insights)
     
     # คำแนะนำการใช้งาน
     st.info("""
     **🧠 AI Analysis ให้ข้อมูลเชิงลึกเกี่ยวกับ:**
-    - 📈 การวิเคราะห์การเติบโตและแนวโน้ม
+    - 📈 การวิเคราะหืการเติบโตและแนวโน้ม
     - ⚠️ การประเมินความเสี่ยงและโอกาส  
     - 🎯 ข้อเสนะแนะเชิงกลยุทธ์สำหรับการผลิต
     - 🔧 แนวทางการเตรียมความพร้อมและปรับปรุง
@@ -732,7 +788,7 @@ def map_categories_to_historical_brands(category_targets, historical_df):
     st.info("""
     **🔍 หลักการจับคู่ที่ใช้ (เฉพาะ MFG - การผลิต):**
     
-    **✅ รวมเข้าวิเคราะหื (MFG):**
+    **✅ รวมเข้าวิเคราะหืื (MFG):**
     - **SCG + Pipe/Conduit (MFG)** → SCG-PI  
     - **SCG + Fitting (MFG)** → SCG-FT
     - **SCG + Valve (MFG)** → SCG-BV  
@@ -769,79 +825,6 @@ def map_categories_to_historical_brands(category_targets, historical_df):
                 st.write(f"   • {item}")
                 
     st.success(f"✅ ประมวลผล {processed_categories} รายการ MFG จาก {total_categories} รายการทั้งหมด")
-    
-    # แสดงผลสรุปและการวิเคราะหื (ถ้ามีข้อมูลย้อนหลัง)
-    if brand_targets_agg and historical_summary:
-        st.write("📊 **สรุปเป้าหมายตาม Brand และการเปรียบเทียบ:**")
-        
-        comparison_data = []
-        for brand, targets in brand_targets_agg.items():
-            hist_tonnage = targets['historicalTonnage']
-            may_ratio = targets['mayTarget'] / hist_tonnage if hist_tonnage > 0 else float('inf')
-            w1_ratio = targets['w1Target'] / hist_tonnage if hist_tonnage > 0 else float('inf')
-            
-            comparison_data.append({
-                'Brand': brand,
-                'May Target': targets['mayTarget'],
-                'W1 Target': targets['w1Target'],
-                'Historical': hist_tonnage,
-                'May Ratio': f"{may_ratio:.1f}x" if hist_tonnage > 0 else "N/A",
-                'W1 Ratio': f"{w1_ratio:.1f}x" if hist_tonnage > 0 else "N/A",
-                'Status': '⚠️ สูงมาก' if (may_ratio > 5 or w1_ratio > 5) and hist_tonnage > 0 else 
-                         '❌ ไม่มีข้อมูล' if hist_tonnage == 0 else '✅ ปกติ'
-            })
-        
-        comparison_df = pd.DataFrame(comparison_data)
-        st.dataframe(comparison_df)
-        
-        # แสดงกราฟเปรียบเทียบ (ถ้ามีข้อมูลย้อนหลัง)
-        brands_with_data = [item for item in comparison_data if item['Historical'] > 0]
-        if brands_with_data:
-            st.write("📈 **กราฟเปรียบเทียบเป้าหมาย vs ข้อมูลย้อนหลัง:**")
-            
-            brands = [item['Brand'] for item in brands_with_data]
-            historical = [item['Historical'] for item in brands_with_data]
-            may_targets = [item['May Target'] for item in brands_with_data]
-            w1_targets = [item['W1 Target'] for item in brands_with_data]
-            
-            fig = go.Figure(data=[
-                go.Bar(name='Historical Data', x=brands, y=historical),
-                go.Bar(name='May Target', x=brands, y=may_targets),
-                go.Bar(name='W1 Target', x=brands, y=w1_targets)
-            ])
-            fig.update_layout(
-                title='เปรียบเทียบเป้าหมาย vs ข้อมูลย้อนหลัง (ตัน)',
-                xaxis_title='Brand',
-                yaxis_title='ตัน',
-                barmode='group'
-            )
-            st.plotly_chart(fig, use_container_width=True)
-        
-        # แสดงคำเตือนสำหรับเป้าหมายที่ผิดปกติ
-        warnings = []
-        for item in comparison_data:
-            if item['Historical'] == 0:
-                warnings.append(f"❌ **{item['Brand']}**: ไม่มีข้อมูลย้อนหลัง - ไม่สามารถคำนวณการกระจาย SKU ได้")
-            elif 'สูงมาก' in item['Status']:
-                warnings.append(f"⚠️ **{item['Brand']}**: เป้าหมายสูงมาก ({item['May Ratio']}, {item['W1 Ratio']}) - กรุณาตรวจสอบความถูกต้อง")
-        
-        if warnings:
-            st.warning("**คำเตือน:**")
-            for warning in warnings:
-                st.write(warning)
-        
-        # แสดงคำแนะนำ
-        st.info("**💡 คำแนะนำ:**\n"
-                "- เป้าหมายที่เหมาะสมควรอยู่ในช่วง 1-3 เท่าของข้อมูลย้อนหลัง\n"
-                "- หากเป้าหมายสูงเกินไป อาจต้องปรับลดหรือเพิ่มข้อมูลย้อนหลัง\n"
-                "- Brand ที่ไม่มีข้อมูลย้อนหลังจะไม่สามารถคำนวณการกระจาย SKU ได้")
-    elif brand_targets_agg and not historical_summary:
-        st.warning("⚠️ **ไม่มีข้อมูลย้อนหลัง** - จะไม่สามารถเปรียบเทียบหรือคำนวณการกระจาย SKU ได้")
-        st.write("📋 **Brand Targets ที่ได้:**")
-        for brand, targets in brand_targets_agg.items():
-            st.write(f"   • **{brand}**: May={targets['mayTarget']}, W1={targets['w1Target']}")
-    
-    return brand_mapping, brand_targets_agg
     
     # แสดงผลสรุปและการวิเคราะหื (ถ้ามีข้อมูลย้อนหลัง)
     if brand_targets_agg and historical_summary:
@@ -1124,7 +1107,7 @@ if 'selected_brand' not in st.session_state:
 if 'show_all_skus' not in st.session_state:
     st.session_state.show_all_skus = False
 
-tab1, tab2, tab3 = st.tabs(["1. 📁 อัปโหลดข้อมูล", "2. 📊 การวิเคราะห์", "3. 📋 ผลลัพธ์"])
+tab1, tab2, tab3 = st.tabs(["1. 📁 อัปโหลดข้อมูล", "2. 📊 การวิเคราะหื", "3. 📋 ผลลัพธ์"])
 
 with tab1:
     st.header("📁 อัปโหลดไฟล์เป้าหมาย")
@@ -1213,7 +1196,7 @@ with tab1:
                 )
                 
                 if st.session_state.predictions:
-                    st.success("🎉 การสร้างการกระจาย SKU เสร็จสมบูรณ์! กรุณาไปที่แท็บ 'การวิเคราะห์' หรือ 'ผลลัพธ์'")
+                    st.success("🎉 การสร้างการกระจาย SKU เสร็จสมบูรณ์! กรุณาไปที่แท็บ 'การวิเคราะหื' หรือ 'ผลลัพธ์'")
                     st.session_state.selected_brand = next(iter(st.session_state.predictions), None)
                     st.balloons()
                 else:
@@ -1286,7 +1269,7 @@ def create_brand_selector(widget_key):
     return st.session_state.selected_brand
 
 with tab2:
-    st.header("📊 การวิเคราะห์ข้อมูล")
+    st.header("📊 การวิเคราะหืข้อมูล")
     if not st.session_state.predictions:
         st.info("📝 กรุณาอัปโหลดข้อมูลและสร้างการกระจาย SKU ในแท็บ 'อัปโหลดข้อมูล' ก่อน")
     else:
