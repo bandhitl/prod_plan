@@ -5,9 +5,6 @@ import plotly.express as px
 
 # --- Configuration and Constants ---
 HISTORICAL_REQUIRED_COLS = ["BRANDPRODUCT", "Item Code", "TON", "Item Name"]
-TARGET_CATEGORY_COL = 0
-TARGET_MAY_COL = 1
-TARGET_W1_COL = 2
 
 # --- Helper Functions for Data Processing ---
 
@@ -28,18 +25,25 @@ def process_historical_file(uploaded_file):
 
 def process_target_file(uploaded_file):
     """
-    Processes the uploaded target data Excel file.
-    This version is more flexible, case-insensitive, and searches for the 'Category' header row.
+    Processes the target file with a robust method to find the data table
+    by searching for the 'Category' header across columns and rows.
     """
     try:
         df = pd.read_excel(uploaded_file, sheet_name=0, header=None)
         
         header_row_idx = -1
-        # Find the row index where the header 'Category' is located (case-insensitive)
+        header_col_idx = -1
+        
+        # Search for the header row by finding the cell containing 'Category' (case-insensitive)
+        # We search in the first 5 columns to be safe
         for i, row in df.iterrows():
-            # --- FIX: Make the check case-insensitive ---
-            if str(row.iloc[TARGET_CATEGORY_COL]).strip().lower() == 'category':
-                header_row_idx = i
+            for j in range(min(5, len(row))):
+                cell_value = str(row.iloc[j]).strip().lower()
+                if cell_value == 'category':
+                    header_row_idx = i
+                    header_col_idx = j
+                    break
+            if header_row_idx != -1:
                 break
         
         if header_row_idx == -1:
@@ -49,12 +53,18 @@ def process_target_file(uploaded_file):
         start_row_idx = header_row_idx + 1
         end_row_idx = len(df)
 
+        # Find the end row by searching for 'Total' in the same column as 'Category'
         for i in range(start_row_idx, len(df)):
-            if str(df.iloc[i, TARGET_CATEGORY_COL]).strip().lower() == 'total':
+            if str(df.iloc[i, header_col_idx]).strip().lower() == 'total':
                 end_row_idx = i
                 break
         
-        target_data_df = df.iloc[start_row_idx:end_row_idx, [TARGET_CATEGORY_COL, TARGET_MAY_COL, TARGET_W1_COL]]
+        # Define the columns to extract based on the found header column
+        category_col = header_col_idx
+        may_target_col = header_col_idx + 1
+        w1_target_col = header_col_idx + 2
+
+        target_data_df = df.iloc[start_row_idx:end_row_idx, [category_col, may_target_col, w1_target_col]]
         target_data_df.columns = ['Category', 'MayTarget', 'W1Target']
 
         target_data_df['MayTarget'] = pd.to_numeric(target_data_df['MayTarget'], errors='coerce').fillna(0)
@@ -305,13 +315,13 @@ def create_brand_selector(widget_key):
         return None
 
     if st.session_state.selected_brand not in brand_list:
-         st.session_state.selected_brand = brand_list[0]
+         st.session_state.selected_brand = brand_list[0] if brand_list else None
     
     try:
-        current_brand_index = brand_list.index(st.session_state.selected_brand)
+        current_brand_index = brand_list.index(st.session_state.selected_brand) if st.session_state.selected_brand else 0
     except ValueError:
         current_brand_index = 0
-        st.session_state.selected_brand = brand_list[0]
+        st.session_state.selected_brand = brand_list[0] if brand_list else None
 
     st.session_state.selected_brand = st.selectbox(
         "เลือกแบรนด์ (Select Brand):", 
