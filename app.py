@@ -238,8 +238,11 @@ def generate_insight_analysis(brand_targets_agg, predictions, selected_brand=Non
         ให้คำตอบเป็นภาษาไทย ความยาวประมาณ 500-700 คำ ใช้โทนสุภาพแต่เป็นมืออาชีพ
         """
         
-        # เรียก OpenAI API
-        response = openai.ChatCompletion.create(
+        # เรียก OpenAI API (ใช้ v1.0+ syntax)
+        from openai import OpenAI
+        client = OpenAI(api_key=openai.api_key)
+        
+        response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
                 {"role": "system", "content": "คุณเป็นผู้เชี่ยวชาญด้านการวิเคราะหืการผลิตและแผนธุรกิจ"},
