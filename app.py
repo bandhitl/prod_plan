@@ -34,52 +34,112 @@ def process_target_file(uploaded_file):
         header_row_idx = -1
         header_col_idx = -1
         
-        # Search for the header row by finding the cell containing 'Category' (case-insensitive)
-        # We search in the first 5 columns to be safe
-        for i, row in df.iterrows():
-            for j in range(min(5, len(row))):
-                cell_value = str(row.iloc[j]).strip().lower()
-                if cell_value == 'category':
-                    header_row_idx = i
-                    header_col_idx = j
-                    break
+        # ขยายการค้นหาให้กว้างขึ้น - ค้นหา 10 แถวแรกและ 10 คอลัมน์แรก
+        max_search_rows = min(10, len(df))
+        max_search_cols = min(10, len(df.columns))
+        
+        # เพิ่มคำค้นหาที่หลากหลายมากขึ้น
+        search_terms = ['category', 'หมวดหมู่', 'ประเภท', 'กลุ่มสินค้า', 'brand', 'แบรนด์']
+        
+        # ดีบัก: แสดงข้อมูลใน 10 แถวแรก 10 คอลัมน์แรก
+        st.write("🔍 **ข้อมูลในไฟล์ Excel (10 แถวแรก 10 คอลัมน์แรก):**")
+        debug_df = df.iloc[:max_search_rows, :max_search_cols].copy()
+        st.dataframe(debug_df)
+        
+        # Search for the header row by finding cells containing any of the search terms
+        for i in range(max_search_rows):
+            for j in range(max_search_cols):
+                if i < len(df) and j < len(df.columns):
+                    cell_value = str(df.iloc[i, j]).strip().lower()
+                    
+                    # ตรวจสอบว่าเซลล์มีคำค้นหาหรือไม่
+                    for term in search_terms:
+                        if term in cell_value:
+                            header_row_idx = i
+                            header_col_idx = j
+                            st.success(f"✅ พบหัวข้อ '{df.iloc[i, j]}' ที่แถว {i+1} คอลัมน์ {j+1}")
+                            break
+                    
+                    if header_row_idx != -1:
+                        break
             if header_row_idx != -1:
                 break
         
+        # หากยังไม่พบ ให้ผู้ใช้เลือกเอง
         if header_row_idx == -1:
-            st.error("ไม่พบแถวหัวข้อ 'Category' ในไฟล์เป้าหมาย กรุณาตรวจสอบไฟล์")
-            return None
+            st.warning("⚠️ ไม่พบหัวข้อโดยอัตโนมัติ กรุณาระบุตำแหน่งด้วยตนเอง")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                manual_row = st.number_input("แถวที่มีหัวข้อ (เริ่มจาก 1):", min_value=1, max_value=len(df), value=1)
+            with col2:
+                manual_col = st.number_input("คอลัมน์ที่มีหัวข้อ (เริ่มจาก 1):", min_value=1, max_value=len(df.columns), value=1)
+            
+            if st.button("ใช้ตำแหน่งที่ระบุ"):
+                header_row_idx = manual_row - 1
+                header_col_idx = manual_col - 1
+                st.success(f"✅ ใช้ตำแหน่งแถว {manual_row} คอลัมน์ {manual_col}")
+            else:
+                return None
             
         start_row_idx = header_row_idx + 1
         end_row_idx = len(df)
 
-        # Find the end row by searching for 'Total' in the same column as 'Category'
+        # Find the end row by searching for 'Total' or 'รวม' in the same column as the header
+        end_search_terms = ['total', 'รวม', 'ทั้งหมด', 'sum']
         for i in range(start_row_idx, len(df)):
-            if str(df.iloc[i, header_col_idx]).strip().lower() == 'total':
-                end_row_idx = i
-                break
+            if i < len(df) and header_col_idx < len(df.columns):
+                cell_value = str(df.iloc[i, header_col_idx]).strip().lower()
+                for term in end_search_terms:
+                    if term in cell_value:
+                        end_row_idx = i
+                        st.info(f"📍 พบแถวสิ้นสุดที่ '{df.iloc[i, header_col_idx]}' แถว {i+1}")
+                        break
+                if end_row_idx != len(df):
+                    break
         
         # Define the columns to extract based on the found header column
         category_col = header_col_idx
         may_target_col = header_col_idx + 1
         w1_target_col = header_col_idx + 2
 
+        # ตรวจสอบว่าคอลัมน์เป้าหมายอยู่ในขอบเขต
+        if w1_target_col >= len(df.columns):
+            st.error(f"❌ ไฟล์ไม่มีคอลัมน์เพียงพอ ต้องการอย่างน้อย {w1_target_col + 1} คอลัมน์")
+            return None
+
         target_data_df = df.iloc[start_row_idx:end_row_idx, [category_col, may_target_col, w1_target_col]]
         target_data_df.columns = ['Category', 'MayTarget', 'W1Target']
+        
+        # แสดงข้อมูลที่แยกออกมาได้
+        st.write(f"📋 **ข้อมูลที่แยกได้ (แถว {start_row_idx+1} ถึง {end_row_idx}):**")
+        st.dataframe(target_data_df.head(10))
 
         target_data_df['MayTarget'] = pd.to_numeric(target_data_df['MayTarget'], errors='coerce').fillna(0)
         target_data_df['W1Target'] = pd.to_numeric(target_data_df['W1Target'], errors='coerce').fillna(0)
         
         category_targets = {}
         for _, row in target_data_df.iterrows():
-            if pd.notna(row['Category']) and row['Category'].strip() != '':
-                category_targets[row['Category']] = {
+            if pd.notna(row['Category']) and str(row['Category']).strip() != '':
+                category_targets[str(row['Category']).strip()] = {
                     'mayTarget': row['MayTarget'],
                     'w1Target': row['W1Target']
                 }
+        
+        st.success(f"✅ ประมวลผลสำเร็จ! พบ {len(category_targets)} categories")
+        
+        # แสดงผลลัพธ์ที่ได้
+        if category_targets:
+            st.write("📊 **Categories ที่พบ:**")
+            result_df = pd.DataFrame.from_dict(category_targets, orient='index')
+            st.dataframe(result_df)
+        
         return category_targets
+        
     except Exception as e:
         st.error(f"เกิดข้อผิดพลาดในการประมวลผลไฟล์เป้าหมาย: {e}")
+        import traceback
+        st.error(f"รายละเอียด: {traceback.format_exc()}")
         return None
 
 
