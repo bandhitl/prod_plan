@@ -629,34 +629,213 @@ def display_insights_section(brand_targets_agg, predictions, selected_brand):
                         from openai import OpenAI
                         client = OpenAI(api_key=OPENAI_API_KEY)
                         
+                        # Advanced AI prompt with comprehensive production analysis
+                        brand_details = []
+                        total_skus = 0
+                        capacity_utilization = 0
+                        
+                        for brand, targets in brand_targets_agg.items():
+                            historical = targets.get('historicalTonnage', 0)
+                            may_target = targets['mayTarget']
+                            w1_target = targets['w1Target']
+                            sku_count = len(predictions.get(brand, {}).get('mayDistribution', {}))
+                            total_skus += sku_count
+                            
+                            growth_ratio = may_target / historical if historical > 0 else 0
+                            capacity_req = min((may_target / 1000) * 100, 100)  # Assuming 1000 tons max capacity
+                            capacity_utilization += capacity_req
+                            
+                            setup_complexity = min(2 + (sku_count / 10) + (growth_ratio / 2), 10)
+                            
+                            brand_details.append({
+                                "brand": brand,
+                                "may_target": may_target,
+                                "historical": historical,
+                                "w1_target": w1_target,
+                                "growth_ratio": round(growth_ratio, 2),
+                                "sku_count": sku_count,
+                                "capacity_requirement": round(capacity_req, 1),
+                                "setup_complexity": round(setup_complexity, 1),
+                                "categories": targets.get('categories', [])
+                            })
+                        
+                        # Calculate advanced metrics
+                        avg_setup_complexity = sum(b['setup_complexity'] for b in brand_details) / len(brand_details)
+                        high_growth_brands = [b for b in brand_details if b['growth_ratio'] > 3]
+                        medium_growth_brands = [b for b in brand_details if 1.5 <= b['growth_ratio'] <= 3]
+                        total_labor_hours = total_may * 8  # 8 hours per ton
+                        total_machine_hours = total_may * 6  # 6 machine hours per ton
+                        estimated_lead_time = 7 * (1 + avg_setup_complexity/10)
+                        
                         prompt = f"""
-                        Analyze this production planning scenario:
-                        
-                        Total May Target: {total_may:.1f} tons
-                        Total Historical: {total_historical:.1f} tons
-                        Growth Factor: {growth_rate:.1f}x
-                        Number of Brands: {brand_count}
-                        High Risk Brands: {high_risk_count}
-                        
-                        Provide strategic production planning recommendations in JSON format:
+                        As a senior production planning manager with 15+ years experience in PVC manufacturing, analyze this comprehensive production scenario for May 2024. This is a critical month-end push requiring strategic decision-making.
+
+                        PRODUCTION OVERVIEW:
+                        - Total May Target: {total_may:.1f} tons ({((growth_rate-1)*100):.1f}% increase from historical)
+                        - Total Historical: {total_historical:.1f} tons
+                        - Number of Brands: {brand_count}
+                        - Total SKUs: {total_skus}
+                        - Estimated Total Labor Hours: {total_labor_hours:,.0f} hours
+                        - Estimated Total Machine Hours: {total_machine_hours:,.0f} hours
+                        - Average Setup Complexity: {avg_setup_complexity:.1f}/10
+                        - Estimated Lead Time: {estimated_lead_time:.1f} days
+                        - Overall Capacity Utilization: {capacity_utilization:.1f}%
+
+                        DETAILED BRAND ANALYSIS:
+                        {json.dumps(brand_details, indent=2)}
+
+                        HIGH RISK SCENARIOS:
+                        - Brands with >3x growth: {len(high_growth_brands)} brands
+                        - Brands with 1.5-3x growth: {len(medium_growth_brands)} brands
+                        - Setup complexity >7: {len([b for b in brand_details if b['setup_complexity'] > 7])} brands
+
+                        CRITICAL ANALYSIS REQUIRED:
+
+                        1. **PRODUCTION FEASIBILITY & BOTTLENECK ANALYSIS**
+                           - Detailed capacity assessment vs targets
+                           - Identification of critical bottlenecks (machines, labor, materials)
+                           - Risk probability assessment for missing targets
+                           - Equipment utilization optimization strategies
+
+                        2. **STRATEGIC PRODUCTION SEQUENCING**
+                           - Optimal brand production sequence based on complexity and risk
+                           - Changeover time minimization strategies
+                           - Parallel processing opportunities
+                           - Buffer time allocation for high-risk brands
+
+                        3. **RESOURCE OPTIMIZATION & WORKFORCE PLANNING**
+                           - Precise labor allocation (operators, supervisors, QC staff)
+                           - Skill requirements and training needs
+                           - Overtime planning and cost implications
+                           - Equipment maintenance scheduling during production
+
+                        4. **QUALITY ASSURANCE & RISK MITIGATION**
+                           - Quality control checkpoints for each growth category
+                           - First-pass yield predictions
+                           - Rework contingency planning
+                           - Testing protocol optimization
+
+                        5. **COST OPTIMIZATION & PROFITABILITY**
+                           - Material procurement timing and bulk purchase opportunities
+                           - Energy cost optimization during peak production
+                           - Waste reduction strategies for high-volume runs
+                           - Margin impact analysis per brand
+
+                        6. **CONTINGENCY PLANNING & SCENARIO ANALYSIS**
+                           - Best-case, worst-case, and most-likely scenarios
+                           - Equipment failure contingencies
+                           - Supply chain disruption responses
+                           - Customer communication strategies for delays
+
+                        Provide response in this JSON structure with quantitative metrics and specific actionable recommendations:
+
                         {{
-                            "executive_summary": "brief overall assessment",
-                            "key_recommendations": ["rec1", "rec2", "rec3"],
-                            "risk_factors": ["risk1", "risk2"],
-                            "success_strategies": ["strategy1", "strategy2", "strategy3"],
-                            "resource_optimization": ["resource1", "resource2"],
-                            "timeline_suggestions": ["timeline1", "timeline2"]
+                            "executive_summary": {{
+                                "feasibility_score": "1-10 scale",
+                                "success_probability": "percentage with confidence interval",
+                                "critical_path_duration": "days",
+                                "key_success_factors": ["factor1", "factor2", "factor3"],
+                                "major_risks": ["risk1", "risk2", "risk3"],
+                                "overall_assessment": "detailed paragraph"
+                            }},
+                            "production_strategy": {{
+                                "optimal_sequence": [
+                                    {{"brand": "brand_name", "priority": 1, "justification": "reason"}},
+                                    {{"brand": "brand_name", "priority": 2, "justification": "reason"}}
+                                ],
+                                "changeover_optimization": ["strategy1", "strategy2"],
+                                "parallel_processing": {{
+                                    "opportunities": ["opp1", "opp2"],
+                                    "estimated_time_savings": "hours/days"
+                                }},
+                                "buffer_allocation": {{
+                                    "high_risk_brands": "percentage of time",
+                                    "medium_risk_brands": "percentage of time"
+                                }}
+                            }},
+                            "resource_management": {{
+                                "labor_requirements": {{
+                                    "operators_needed": "number",
+                                    "supervisors_needed": "number",
+                                    "qc_staff_needed": "number",
+                                    "overtime_hours": "estimated hours",
+                                    "skill_gaps": ["gap1", "gap2"]
+                                }},
+                                "equipment_optimization": {{
+                                    "utilization_target": "percentage",
+                                    "maintenance_windows": ["window1", "window2"],
+                                    "bottleneck_mitigation": ["action1", "action2"]
+                                }},
+                                "material_strategy": {{
+                                    "procurement_timing": "recommendation",
+                                    "inventory_levels": "recommendation",
+                                    "supplier_coordination": "strategy"
+                                }}
+                            }},
+                            "quality_framework": {{
+                                "inspection_points": ["point1", "point2", "point3"],
+                                "testing_protocols": {{
+                                    "high_risk_products": "protocol description",
+                                    "standard_products": "protocol description"
+                                }},
+                                "yield_predictions": {{
+                                    "first_pass_yield": "percentage",
+                                    "rework_rate": "percentage"
+                                }},
+                                "quality_metrics": ["metric1", "metric2", "metric3"]
+                            }},
+                            "financial_analysis": {{
+                                "cost_breakdown": {{
+                                    "material_costs": "amount and percentage",
+                                    "labor_costs": "amount and percentage",
+                                    "overhead_costs": "amount and percentage",
+                                    "total_estimated_cost": "amount"
+                                }},
+                                "profitability_analysis": {{
+                                    "margin_per_brand": [
+                                        {{"brand": "name", "margin": "percentage"}}
+                                    ],
+                                    "break_even_point": "tonnage",
+                                    "roi_timeline": "months"
+                                }},
+                                "cost_optimization": ["opportunity1", "opportunity2", "opportunity3"]
+                            }},
+                            "risk_assessment": {{
+                                "operational_risks": [
+                                    {{"risk": "description", "probability": "percentage", "impact": "high/medium/low", "mitigation": "strategy"}}
+                                ],
+                                "supply_chain_risks": [
+                                    {{"risk": "description", "probability": "percentage", "mitigation": "strategy"}}
+                                ],
+                                "market_risks": [
+                                    {{"risk": "description", "probability": "percentage", "mitigation": "strategy"}}
+                                ],
+                                "contingency_plans": ["plan1", "plan2", "plan3"]
+                            }},
+                            "monitoring_framework": {{
+                                "daily_kpis": ["kpi1", "kpi2", "kpi3"],
+                                "weekly_reviews": ["metric1", "metric2"],
+                                "escalation_triggers": ["trigger1", "trigger2"],
+                                "course_correction_protocols": ["protocol1", "protocol2"]
+                            }},
+                            "implementation_roadmap": {{
+                                "week_1": ["milestone1", "milestone2"],
+                                "week_2": ["milestone1", "milestone2"],
+                                "week_3": ["milestone1", "milestone2"],
+                                "week_4": ["milestone1", "milestone2"],
+                                "success_metrics": ["metric1", "metric2", "metric3"]
+                            }}
                         }}
                         """
                         
                         response = client.chat.completions.create(
-                            model="gpt-4o-mini",
+                            model="gpt-4o",  # Use stronger model for complex analysis
                             messages=[
-                                {"role": "system", "content": "You are a production planning expert. Provide concise, actionable insights in JSON format."},
+                                {"role": "system", "content": "You are a senior production planning manager with 15+ years of experience in PVC manufacturing, specializing in complex multi-brand production optimization. You have deep expertise in capacity planning, resource optimization, quality control, and risk management. Provide detailed, quantitative analysis with specific, actionable recommendations based on real manufacturing constraints and best practices."},
                                 {"role": "user", "content": prompt}
                             ],
-                            max_tokens=1500,
-                            temperature=0.3
+                            max_tokens=4000,  # Increased for comprehensive response
+                            temperature=0.2   # Lower for more precise, analytical response
                         )
                         
                         ai_response = response.choices[0].message.content.strip()
@@ -669,45 +848,238 @@ def display_insights_section(brand_targets_agg, predictions, selected_brand):
                         
                         ai_insights = json.loads(ai_response)
                         
-                        # Display AI insights
+                        # Display comprehensive AI insights with advanced visualization
                         st.success("✅ Advanced AI analysis completed!")
                         
-                        st.markdown("**🤖 AI Executive Summary:**")
-                        st.info(ai_insights.get('executive_summary', 'No summary available'))
+                        # Executive Summary Section
+                        exec_summary = ai_insights.get('executive_summary', {})
+                        st.markdown("**🎯 AI Executive Assessment**")
                         
-                        # Create tabs for better organization
-                        tab1, tab2, tab3 = st.tabs(["💡 Recommendations", "⚠️ Risk & Strategy", "📊 Resources & Timeline"])
+                        col1, col2, col3, col4 = st.columns(4)
+                        with col1:
+                            feasibility = exec_summary.get('feasibility_score', 'N/A')
+                            st.metric("Feasibility Score", f"{feasibility}/10")
+                        with col2:
+                            success_prob = exec_summary.get('success_probability', 'N/A')
+                            st.metric("Success Probability", success_prob)
+                        with col3:
+                            critical_path = exec_summary.get('critical_path_duration', 'N/A')
+                            st.metric("Critical Path", critical_path)
+                        with col4:
+                            overall_risk = "🔴 High" if high_risk_count > 2 else "🟡 Medium" if high_risk_count > 0 else "🟢 Low"
+                            st.metric("Risk Level", overall_risk)
+                        
+                        assessment = exec_summary.get('overall_assessment', '')
+                        if assessment:
+                            st.info(f"**Overall Assessment:** {assessment}")
+                        
+                        # Success Factors & Major Risks
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            success_factors = exec_summary.get('key_success_factors', [])
+                            if success_factors:
+                                st.markdown("**✅ Key Success Factors:**")
+                                for factor in success_factors:
+                                    st.markdown(f"• {factor}")
+                        
+                        with col2:
+                            major_risks = exec_summary.get('major_risks', [])
+                            if major_risks:
+                                st.markdown("**⚠️ Major Risks:**")
+                                for risk in major_risks:
+                                    st.markdown(f"• {risk}")
+                        
+                        # Advanced Analysis Tabs
+                        tab1, tab2, tab3, tab4, tab5 = st.tabs(["🎯 Production Strategy", "👥 Resources", "🔍 Quality & Risk", "💰 Financial", "📊 Implementation"])
                         
                         with tab1:
-                            st.markdown("**Key Recommendations:**")
-                            for rec in ai_insights.get('key_recommendations', []):
-                                st.markdown(f"• {rec}")
+                            prod_strategy = ai_insights.get('production_strategy', {})
+                            
+                            # Optimal Sequence
+                            st.markdown("**📋 Optimal Production Sequence**")
+                            sequence = prod_strategy.get('optimal_sequence', [])
+                            if sequence:
+                                sequence_df = pd.DataFrame(sequence)
+                                st.dataframe(sequence_df, use_container_width=True)
+                            
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.markdown("**⚡ Changeover Optimization**")
+                                changeover = prod_strategy.get('changeover_optimization', [])
+                                for item in changeover:
+                                    st.markdown(f"• {item}")
+                            
+                            with col2:
+                                st.markdown("**🔄 Parallel Processing**")
+                                parallel = prod_strategy.get('parallel_processing', {})
+                                opportunities = parallel.get('opportunities', [])
+                                for opp in opportunities:
+                                    st.markdown(f"• {opp}")
+                                
+                                time_savings = parallel.get('estimated_time_savings', 'N/A')
+                                if time_savings != 'N/A':
+                                    st.success(f"**Time Savings:** {time_savings}")
                         
                         with tab2:
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                st.markdown("**Risk Factors:**")
-                                for risk in ai_insights.get('risk_factors', []):
-                                    st.markdown(f"⚠️ {risk}")
+                            resource_mgmt = ai_insights.get('resource_management', {})
                             
-                            with col2:
-                                st.markdown("**Success Strategies:**")
-                                for strategy in ai_insights.get('success_strategies', []):
-                                    st.markdown(f"✅ {strategy}")
+                            # Labor Requirements
+                            labor_req = resource_mgmt.get('labor_requirements', {})
+                            if labor_req:
+                                st.markdown("**👥 Labor Requirements**")
+                                
+                                col1, col2, col3 = st.columns(3)
+                                with col1:
+                                    operators = labor_req.get('operators_needed', 'N/A')
+                                    st.metric("Operators", operators)
+                                with col2:
+                                    supervisors = labor_req.get('supervisors_needed', 'N/A')
+                                    st.metric("Supervisors", supervisors)
+                                with col3:
+                                    qc_staff = labor_req.get('qc_staff_needed', 'N/A')
+                                    st.metric("QC Staff", qc_staff)
+                                
+                                overtime = labor_req.get('overtime_hours', 'N/A')
+                                if overtime != 'N/A':
+                                    st.warning(f"**Estimated Overtime:** {overtime}")
+                                
+                                skill_gaps = labor_req.get('skill_gaps', [])
+                                if skill_gaps:
+                                    st.markdown("**🎓 Skill Gaps to Address:**")
+                                    for gap in skill_gaps:
+                                        st.markdown(f"• {gap}")
+                            
+                            # Equipment Optimization
+                            equipment = resource_mgmt.get('equipment_optimization', {})
+                            if equipment:
+                                st.markdown("**🔧 Equipment Optimization**")
+                                utilization = equipment.get('utilization_target', 'N/A')
+                                st.info(f"**Target Utilization:** {utilization}")
+                                
+                                bottlenecks = equipment.get('bottleneck_mitigation', [])
+                                if bottlenecks:
+                                    st.markdown("**Bottleneck Mitigation:**")
+                                    for bottleneck in bottlenecks:
+                                        st.markdown(f"• {bottleneck}")
                         
                         with tab3:
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                st.markdown("**Resource Optimization:**")
-                                for resource in ai_insights.get('resource_optimization', []):
-                                    st.markdown(f"🔧 {resource}")
+                            quality_framework = ai_insights.get('quality_framework', {})
+                            risk_assessment = ai_insights.get('risk_assessment', {})
                             
-                            with col2:
-                                st.markdown("**Timeline Suggestions:**")
-                                for timeline in ai_insights.get('timeline_suggestions', []):
-                                    st.markdown(f"📅 {timeline}")
+                            # Quality Framework
+                            if quality_framework:
+                                st.markdown("**🔍 Quality Control Framework**")
+                                
+                                inspection_points = quality_framework.get('inspection_points', [])
+                                if inspection_points:
+                                    st.markdown("**Inspection Points:**")
+                                    for point in inspection_points:
+                                        st.markdown(f"• {point}")
+                                
+                                yield_pred = quality_framework.get('yield_predictions', {})
+                                if yield_pred:
+                                    col1, col2 = st.columns(2)
+                                    with col1:
+                                        first_pass = yield_pred.get('first_pass_yield', 'N/A')
+                                        st.metric("First Pass Yield", first_pass)
+                                    with col2:
+                                        rework_rate = yield_pred.get('rework_rate', 'N/A')
+                                        st.metric("Expected Rework", rework_rate)
+                            
+                            # Risk Assessment
+                            if risk_assessment:
+                                st.markdown("**⚠️ Risk Assessment Matrix**")
+                                
+                                operational_risks = risk_assessment.get('operational_risks', [])
+                                if operational_risks:
+                                    risk_df = pd.DataFrame(operational_risks)
+                                    st.dataframe(risk_df, use_container_width=True)
                         
-                        # Store AI insights
+                        with tab4:
+                            financial = ai_insights.get('financial_analysis', {})
+                            
+                            if financial:
+                                # Cost Breakdown
+                                cost_breakdown = financial.get('cost_breakdown', {})
+                                if cost_breakdown:
+                                    st.markdown("**💰 Cost Breakdown Analysis**")
+                                    
+                                    col1, col2, col3 = st.columns(3)
+                                    with col1:
+                                        material_cost = cost_breakdown.get('material_costs', 'N/A')
+                                        st.info(f"**Material:** {material_cost}")
+                                    with col2:
+                                        labor_cost = cost_breakdown.get('labor_costs', 'N/A')
+                                        st.info(f"**Labor:** {labor_cost}")
+                                    with col3:
+                                        overhead = cost_breakdown.get('overhead_costs', 'N/A')
+                                        st.info(f"**Overhead:** {overhead}")
+                                    
+                                    total_cost = cost_breakdown.get('total_estimated_cost', 'N/A')
+                                    if total_cost != 'N/A':
+                                        st.success(f"**Total Estimated Cost:** {total_cost}")
+                                
+                                # Profitability Analysis
+                                profitability = financial.get('profitability_analysis', {})
+                                if profitability:
+                                    st.markdown("**📈 Profitability Analysis**")
+                                    
+                                    margin_per_brand = profitability.get('margin_per_brand', [])
+                                    if margin_per_brand:
+                                        margin_df = pd.DataFrame(margin_per_brand)
+                                        st.dataframe(margin_df, use_container_width=True)
+                                
+                                # Cost Optimization
+                                cost_opt = financial.get('cost_optimization', [])
+                                if cost_opt:
+                                    st.markdown("**💡 Cost Optimization Opportunities**")
+                                    for opp in cost_opt:
+                                        st.markdown(f"• {opp}")
+                        
+                        with tab5:
+                            implementation = ai_insights.get('implementation_roadmap', {})
+                            monitoring = ai_insights.get('monitoring_framework', {})
+                            
+                            # Implementation Roadmap
+                            if implementation:
+                                st.markdown("**📅 4-Week Implementation Roadmap**")
+                                
+                                weeks = ['week_1', 'week_2', 'week_3', 'week_4']
+                                week_names = ['Week 1', 'Week 2', 'Week 3', 'Week 4']
+                                
+                                for week, week_name in zip(weeks, week_names):
+                                    milestones = implementation.get(week, [])
+                                    if milestones:
+                                        with st.expander(f"{week_name} Milestones"):
+                                            for milestone in milestones:
+                                                st.markdown(f"• {milestone}")
+                                
+                                success_metrics = implementation.get('success_metrics', [])
+                                if success_metrics:
+                                    st.markdown("**🎯 Success Metrics:**")
+                                    for metric in success_metrics:
+                                        st.markdown(f"• {metric}")
+                            
+                            # Monitoring Framework
+                            if monitoring:
+                                st.markdown("**📊 Monitoring & Control Framework**")
+                                
+                                col1, col2 = st.columns(2)
+                                with col1:
+                                    daily_kpis = monitoring.get('daily_kpis', [])
+                                    if daily_kpis:
+                                        st.markdown("**Daily KPIs:**")
+                                        for kpi in daily_kpis:
+                                            st.markdown(f"• {kpi}")
+                                
+                                with col2:
+                                    escalation = monitoring.get('escalation_triggers', [])
+                                    if escalation:
+                                        st.markdown("**Escalation Triggers:**")
+                                        for trigger in escalation:
+                                            st.markdown(f"• {trigger}")
+                        
+                        # Store comprehensive AI insights
                         st.session_state.ai_insights = ai_insights
                         
                     except Exception as e:
