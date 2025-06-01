@@ -25,61 +25,36 @@ def process_historical_file(uploaded_file):
 
 def process_target_file(uploaded_file):
     """
-    Final robust version based on the user's debug screenshot.
-    This version correctly identifies that the data table starts in the second column (index 1).
+    Final, hardcoded version based on the user's debug screenshot.
+    This version assumes a fixed starting position for the data table
+    (Row 6, Column B) to ensure it works with the specific user file.
     """
     try:
         df = pd.read_excel(uploaded_file, sheet_name=0, header=None)
         
-        header_row_idx = -1
-        header_col_idx = -1
-        
-        # Based on the screenshot, the header 'Category' is in column 1 (the second column).
-        # We will search for the header row by looking for 'Category' in column 1.
-        SEARCH_COL_IDX = 1 
+        # --- FINAL FIX: Hardcode row/column indices based on debug screenshot ---
+        # Assume the first data row is at index 5 (row 6 in Excel).
+        # Assume the key columns start at index 1 (column B in Excel).
+        START_ROW_IDX = 5
+        DATA_COL_IDX = 1
 
-        for i, row in df.iterrows():
-            # Check if the cell in the designated search column contains 'category'
-            if len(row) > SEARCH_COL_IDX:
-                cell_value = str(row.iloc[SEARCH_COL_IDX]).strip().lower()
-                if cell_value == 'category':
-                    header_row_idx = i
-                    header_col_idx = SEARCH_COL_IDX
-                    break
-        
-        if header_row_idx == -1:
-            # If not found in column 1, try searching wider as a fallback
-            for i, row in df.iterrows():
-                for j in range(min(5, len(row))):
-                    cell_value = str(row.iloc[j]).strip().lower()
-                    if cell_value == 'category':
-                        header_row_idx = i
-                        header_col_idx = j
-                        break
-                if header_row_idx != -1:
-                    break
-            
-            if header_row_idx == -1:
-                st.error("ไม่พบแถวหัวข้อ 'Category' ในไฟล์เป้าหมาย กรุณาตรวจสอบไฟล์")
-                return None
-            
-        start_row_idx = header_row_idx + 1
+        if len(df) <= START_ROW_IDX:
+            st.error("ไฟล์เป้าหมายมีข้อมูลไม่เพียงพอ หรือโครงสร้างไม่ถูกต้อง (ข้อมูลควรเริ่มที่แถว 6)")
+            return None
+
         end_row_idx = len(df)
-
-        # Find the end row by searching for 'Total' in the same column where 'Category' was found
-        for i in range(start_row_idx, len(df)):
-            if len(df.iloc[i]) > header_col_idx and str(df.iloc[i, header_col_idx]).strip().lower() == 'total':
+        # Find the end row by searching for 'Total' in the known data column
+        for i in range(START_ROW_IDX, len(df)):
+            # Check if the row has enough columns and if the cell contains 'total'
+            if len(df.iloc[i]) > DATA_COL_IDX and str(df.iloc[i, DATA_COL_IDX]).strip().lower() == 'total':
                 end_row_idx = i
                 break
         
-        # Define the columns to extract based on the found header column
-        category_col = header_col_idx
-        may_target_col = header_col_idx + 1
-        w1_target_col = header_col_idx + 2
-
-        target_data_df = df.iloc[start_row_idx:end_row_idx, [category_col, may_target_col, w1_target_col]]
+        # Define the columns to extract based on the fixed positions
+        target_data_df = df.iloc[START_ROW_IDX:end_row_idx, [DATA_COL_IDX, DATA_COL_IDX + 1, DATA_COL_IDX + 2]]
         target_data_df.columns = ['Category', 'MayTarget', 'W1Target']
 
+        # Convert data types and handle potential errors
         target_data_df['MayTarget'] = pd.to_numeric(target_data_df['MayTarget'], errors='coerce').fillna(0)
         target_data_df['W1Target'] = pd.to_numeric(target_data_df['W1Target'], errors='coerce').fillna(0)
         
@@ -90,9 +65,14 @@ def process_target_file(uploaded_file):
                     'mayTarget': row['MayTarget'],
                     'w1Target': row['W1Target']
                 }
+        
+        if not category_targets:
+            st.error("ไม่สามารถดึงข้อมูล Category และ Target ได้จากไฟล์ กรุณาตรวจสอบว่าข้อมูลอยู่ในแถวที่ 6, คอลัมน์ B เป็นต้นไป")
+            return None
+            
         return category_targets
     except Exception as e:
-        st.error(f"เกิดข้อผิดพลาดในการประมวลผลไฟล์เป้าหมาย: {e}")
+        st.error(f"เกิดข้อผิดพลาดร้ายแรงในการประมวลผลไฟล์เป้าหมาย: {e}")
         return None
 
 
