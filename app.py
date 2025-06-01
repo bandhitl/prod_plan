@@ -32,15 +32,16 @@ except:
     pass
 
 def process_historical_file(uploaded_file):
-    """Process uploaded historical data Excel file"""
+    """Process uploaded historical data Excel file - Fixed for pyarrow compatibility"""
     try:
-        # Try different header positions
+        # Try different header positions with explicit dtype
         header_positions = [0, 1, 2]
         df = None
         
         for header_pos in header_positions:
             try:
-                temp_df = pd.read_excel(uploaded_file, header=header_pos)
+                # Read with dtype=str to avoid pyarrow issues
+                temp_df = pd.read_excel(uploaded_file, header=header_pos, dtype=str)
                 cols_found = sum(1 for col in HISTORICAL_REQUIRED_COLS 
                                if any(req_col.upper() in str(temp_col).upper() 
                                      for temp_col in temp_df.columns 
@@ -50,7 +51,7 @@ def process_historical_file(uploaded_file):
                     df = temp_df
                     st.success(f"✅ Found valid headers at row {header_pos + 1}")
                     break
-            except:
+            except Exception as e:
                 continue
         
         if df is None:
@@ -73,33 +74,41 @@ def process_historical_file(uploaded_file):
             st.error(f"Missing required columns: {', '.join(missing_cols)}")
             return None
         
-        # Clean data with proper type conversion
+        # Clean data with proper type conversion and error handling
         original_count = len(df)
-        df['TON'] = pd.to_numeric(df['TON'], errors='coerce')
+        
+        # Convert TON column with better error handling
+        df['TON'] = pd.to_numeric(df['TON'].astype(str).str.replace(',', ''), errors='coerce')
         df = df.dropna(subset=['TON'])
         df = df[df['TON'] > 0]
         df = df.dropna(subset=['BRANDPRODUCT', 'Item Code'])
         
-        # Ensure string columns are properly converted
+        # Ensure string columns are properly converted with null handling
         df['BRANDPRODUCT'] = df['BRANDPRODUCT'].astype(str).str.strip()
         df['Item Code'] = df['Item Code'].astype(str).str.strip()
         df['Item Name'] = df['Item Name'].astype(str).str.strip()
         
-        # Remove empty strings
+        # Remove empty strings and 'nan' strings
         df = df[df['BRANDPRODUCT'] != '']
+        df = df[df['BRANDPRODUCT'] != 'nan']
         df = df[df['Item Code'] != '']
+        df = df[df['Item Code'] != 'nan']
         
         st.write(f"📊 **Data Summary:** {len(df):,} valid records from {original_count:,} total rows")
         
-        # Brand summary
-        brand_summary = df.groupby('BRANDPRODUCT').agg({
-            'Item Code': 'nunique',
-            'TON': ['count', 'sum']
-        }).round(2)
-        brand_summary.columns = ['Unique SKUs', 'Records', 'Total TON']
-        brand_summary = brand_summary.sort_values('Total TON', ascending=False)
+        # Brand summary with error handling
+        try:
+            brand_summary = df.groupby('BRANDPRODUCT').agg({
+                'Item Code': 'nunique',
+                'TON': ['count', 'sum']
+            }).round(2)
+            brand_summary.columns = ['Unique SKUs', 'Records', 'Total TON']
+            brand_summary = brand_summary.sort_values('Total TON', ascending=False)
+            
+            st.dataframe(brand_summary, use_container_width=True)
+        except Exception as e:
+            st.warning(f"Could not generate brand summary: {e}")
         
-        st.dataframe(brand_summary, use_container_width=True)
         return df
         
     except Exception as e:
@@ -107,9 +116,10 @@ def process_historical_file(uploaded_file):
         return None
 
 def process_target_file(uploaded_file):
-    """Process BNI Sales Rolling target file"""
+    """Process BNI Sales Rolling target file - Fixed for pyarrow compatibility"""
     try:
-        df = pd.read_excel(uploaded_file, sheet_name=0, header=None)
+        # Read with explicit dtype to avoid pyarrow issues
+        df = pd.read_excel(uploaded_file, sheet_name=0, header=None, dtype=str)
         
         st.write("🔍 **Target File Preview:**")
         st.dataframe(df.head(10))
@@ -124,11 +134,14 @@ def process_target_file(uploaded_file):
         
         for row_idx in range(min(3, len(df))):
             for col_idx in range(len(df.columns)):
-                cell_value = str(df.iloc[row_idx, col_idx]).strip().lower()
-                if 'may' in cell_value and may_col_idx is None:
-                    may_col_idx = col_idx
-                elif 'w1' in cell_value and w1_col_idx is None:
-                    w1_col_idx = col_idx
+                try:
+                    cell_value = str(df.iloc[row_idx, col_idx]).strip().lower()
+                    if 'may' in cell_value and may_col_idx is None:
+                        may_col_idx = col_idx
+                    elif 'w1' in cell_value and w1_col_idx is None:
+                        w1_col_idx = col_idx
+                except:
+                    continue
         
         if may_col_idx is None:
             may_col_idx = 1
@@ -141,35 +154,41 @@ def process_target_file(uploaded_file):
         
         for i in range(start_row_idx, len(df)):
             if i < len(df):
-                cell_value = str(df.iloc[i, 0]).strip().lower()
-                if 'total' in cell_value:
-                    end_row_idx = i
-                    break
+                try:
+                    cell_value = str(df.iloc[i, 0]).strip().lower()
+                    if 'total' in cell_value:
+                        end_row_idx = i
+                        break
+                except:
+                    continue
         
-        # Extract categories
+        # Extract categories with better error handling
         category_data = []
         for i in range(start_row_idx, end_row_idx):
             if i < len(df):
-                category_name = df.iloc[i, 0]
-                may_value = df.iloc[i, may_col_idx] if may_col_idx < len(df.columns) else 0
-                w1_value = df.iloc[i, w1_col_idx] if w1_col_idx < len(df.columns) else 0
-                
-                if pd.notna(category_name) and str(category_name).strip() != '':
-                    try:
-                        may_value = float(str(may_value).strip()) if pd.notna(may_value) else 0
-                    except:
-                        may_value = 0
+                try:
+                    category_name = df.iloc[i, 0]
+                    may_value = df.iloc[i, may_col_idx] if may_col_idx < len(df.columns) else "0"
+                    w1_value = df.iloc[i, w1_col_idx] if w1_col_idx < len(df.columns) else "0"
                     
-                    try:
-                        w1_value = float(str(w1_value).strip()) if pd.notna(w1_value) else 0
-                    except:
-                        w1_value = 0
-                    
-                    category_data.append({
-                        'Category': str(category_name).strip(),
-                        'MayTarget': may_value,
-                        'W1Target': w1_value
-                    })
+                    if pd.notna(category_name) and str(category_name).strip() != '' and str(category_name).strip() != 'nan':
+                        try:
+                            may_value = float(str(may_value).replace(',', '').strip()) if pd.notna(may_value) and str(may_value).strip() != 'nan' else 0
+                        except:
+                            may_value = 0
+                        
+                        try:
+                            w1_value = float(str(w1_value).replace(',', '').strip()) if pd.notna(w1_value) and str(w1_value).strip() != 'nan' else 0
+                        except:
+                            w1_value = 0
+                        
+                        category_data.append({
+                            'Category': str(category_name).strip(),
+                            'MayTarget': may_value,
+                            'W1Target': w1_value
+                        })
+                except Exception as e:
+                    continue
         
         if category_data:
             st.write(f"📋 **Extracted {len(category_data)} categories**")
@@ -591,34 +610,24 @@ def display_insights_section(brand_targets_agg, predictions, selected_brand):
                         st.markdown("• 👥 Assign experienced operators")
                         st.markdown("• 📊 Daily progress monitoring")
         
-        # Advanced AI Analysis (Optional)
+        # Advanced AI Analysis (Using Environment API Key)
         st.divider()
-        st.markdown("### 🚀 Advanced AI Analysis (Optional)")
+        st.markdown("### 🚀 Advanced AI Analysis")
         
-        # Check for OpenAI
-        if OPENAI_AVAILABLE:
-            # API Key input
-            if 'openai_api_key' not in st.session_state:
-                st.session_state.openai_api_key = ""
-            
-            api_key = st.text_input(
-                "OpenAI API Key (for enhanced analysis):",
-                value=st.session_state.openai_api_key,
-                type="password",
-                help="Enter your OpenAI API key for more detailed AI insights"
-            )
-            st.session_state.openai_api_key = api_key
+        # Check for OpenAI and API Key from environment
+        if OPENAI_AVAILABLE and OPENAI_API_KEY:
+            st.info("🤖 OpenAI API Key detected from environment - Ready for AI analysis")
             
             # Advanced analysis button
             if st.button("🧠 Generate Advanced AI Insights", 
                         type="primary", 
-                        disabled=not api_key):
+                        use_container_width=True):
                 
                 with st.spinner("🤖 AI is analyzing your production plan..."):
                     try:
-                        # Call OpenAI API
+                        # Call OpenAI API using environment key
                         from openai import OpenAI
-                        client = OpenAI(api_key=api_key)
+                        client = OpenAI(api_key=OPENAI_API_KEY)
                         
                         prompt = f"""
                         Analyze this production planning scenario:
@@ -634,7 +643,9 @@ def display_insights_section(brand_targets_agg, predictions, selected_brand):
                             "executive_summary": "brief overall assessment",
                             "key_recommendations": ["rec1", "rec2", "rec3"],
                             "risk_factors": ["risk1", "risk2"],
-                            "success_strategies": ["strategy1", "strategy2", "strategy3"]
+                            "success_strategies": ["strategy1", "strategy2", "strategy3"],
+                            "resource_optimization": ["resource1", "resource2"],
+                            "timeline_suggestions": ["timeline1", "timeline2"]
                         }}
                         """
                         
@@ -644,7 +655,7 @@ def display_insights_section(brand_targets_agg, predictions, selected_brand):
                                 {"role": "system", "content": "You are a production planning expert. Provide concise, actionable insights in JSON format."},
                                 {"role": "user", "content": prompt}
                             ],
-                            max_tokens=1000,
+                            max_tokens=1500,
                             temperature=0.3
                         )
                         
@@ -664,28 +675,48 @@ def display_insights_section(brand_targets_agg, predictions, selected_brand):
                         st.markdown("**🤖 AI Executive Summary:**")
                         st.info(ai_insights.get('executive_summary', 'No summary available'))
                         
-                        col1, col2 = st.columns(2)
+                        # Create tabs for better organization
+                        tab1, tab2, tab3 = st.tabs(["💡 Recommendations", "⚠️ Risk & Strategy", "📊 Resources & Timeline"])
                         
-                        with col1:
-                            st.markdown("**💡 AI Recommendations:**")
+                        with tab1:
+                            st.markdown("**Key Recommendations:**")
                             for rec in ai_insights.get('key_recommendations', []):
                                 st.markdown(f"• {rec}")
-                            
-                            st.markdown("**🎯 Success Strategies:**")
-                            for strategy in ai_insights.get('success_strategies', []):
-                                st.markdown(f"• {strategy}")
                         
-                        with col2:
-                            st.markdown("**⚠️ Risk Factors:**")
-                            for risk in ai_insights.get('risk_factors', []):
-                                st.markdown(f"• {risk}")
+                        with tab2:
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.markdown("**Risk Factors:**")
+                                for risk in ai_insights.get('risk_factors', []):
+                                    st.markdown(f"⚠️ {risk}")
+                            
+                            with col2:
+                                st.markdown("**Success Strategies:**")
+                                for strategy in ai_insights.get('success_strategies', []):
+                                    st.markdown(f"✅ {strategy}")
+                        
+                        with tab3:
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.markdown("**Resource Optimization:**")
+                                for resource in ai_insights.get('resource_optimization', []):
+                                    st.markdown(f"🔧 {resource}")
+                            
+                            with col2:
+                                st.markdown("**Timeline Suggestions:**")
+                                for timeline in ai_insights.get('timeline_suggestions', []):
+                                    st.markdown(f"📅 {timeline}")
                         
                         # Store AI insights
                         st.session_state.ai_insights = ai_insights
                         
                     except Exception as e:
                         st.error(f"❌ AI Analysis Error: {str(e)}")
-                        st.info("💡 Please check your API key and try again")
+                        st.info("💡 There might be an issue with the API. Please try again.")
+        
+        elif OPENAI_AVAILABLE and not OPENAI_API_KEY:
+            st.warning("⚠️ OpenAI API Key not found in environment variables")
+            st.info("💡 Please set OPENAI_API_KEY in your Render environment variables")
         
         else:
             st.info("💡 Install OpenAI library for advanced AI analysis: `pip install openai`")
