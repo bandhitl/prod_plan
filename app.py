@@ -26,15 +26,11 @@ def process_historical_file(uploaded_file):
 def process_target_file(uploaded_file):
     """
     Final, hardcoded version based on the user's debug screenshot.
-    This version assumes a fixed starting position for the data table
-    (Row 6, Column B) to ensure it works with the specific user file.
+    This version correctly identifies that the data table starts in the second column (index 1).
     """
     try:
         df = pd.read_excel(uploaded_file, sheet_name=0, header=None)
         
-        # --- FINAL FIX: Hardcode row/column indices based on debug screenshot ---
-        # Assume the first data row is at index 5 (row 6 in Excel).
-        # Assume the key columns start at index 1 (column B in Excel).
         START_ROW_IDX = 5
         DATA_COL_IDX = 1
 
@@ -43,24 +39,21 @@ def process_target_file(uploaded_file):
             return None
 
         end_row_idx = len(df)
-        # Find the end row by searching for 'Total' in the known data column
         for i in range(START_ROW_IDX, len(df)):
-            # Check if the row has enough columns and if the cell contains 'total'
             if len(df.iloc[i]) > DATA_COL_IDX and str(df.iloc[i, DATA_COL_IDX]).strip().lower() == 'total':
                 end_row_idx = i
                 break
         
-        # Define the columns to extract based on the fixed positions
         target_data_df = df.iloc[START_ROW_IDX:end_row_idx, [DATA_COL_IDX, DATA_COL_IDX + 1, DATA_COL_IDX + 2]]
         target_data_df.columns = ['Category', 'MayTarget', 'W1Target']
 
-        # Convert data types and handle potential errors
         target_data_df['MayTarget'] = pd.to_numeric(target_data_df['MayTarget'], errors='coerce').fillna(0)
         target_data_df['W1Target'] = pd.to_numeric(target_data_df['W1Target'], errors='coerce').fillna(0)
         
         category_targets = {}
         for _, row in target_data_df.iterrows():
-            if pd.notna(row['Category']) and row['Category'].strip() != '':
+            # --- FIX: Convert row['Category'] to string before stripping ---
+            if pd.notna(row['Category']) and str(row['Category']).strip() != '':
                 category_targets[row['Category']] = {
                     'mayTarget': row['MayTarget'],
                     'w1Target': row['W1Target']
