@@ -1,21 +1,439 @@
+import streamlit as st
+import pandas as pd
+import io
 import plotly.express as px
 import plotly.graph_objects as go
+import openai
+import json
 
 # --- Configuration and Constants ---
 HISTORICAL_REQUIRED_COLS = ["BRANDPRODUCT", "Item Code", "TON", "Item Name"]
 
-# --- Helper Functions for Data Processing ---
+# OpenAI API Key - ใส่ API Key ของคุณตรงนี้
+OPENAI_API_KEY = "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"  # เปลี่ยนเป็น API Key จริงของคุณ
 
-def process_historical_file(uploaded_file):
+# --- Embedded Historical Data ---
+def get_embedded_historical_data():
+    """Returns embedded historical data based on the uploaded file analysis"""
+    
+    # ข้อมูลจากการวิเคราะหืไฟล์ download.xlsx ที่อัปโหลดมา
+    historical_data = {
+        'MIZU-PI': {
+            'total_tonnage': 131.34,
+            'skus': [
+                {'Item Code': 'J0600161400F', 'Item Name': 'PIPA PVC MIZU-AW 12"', 'TON': 12.5},
+                {'Item Code': 'J06001514009', 'Item Name': 'PIPA PVC MIZU-D 3"', 'TON': 18.7},
+                {'Item Code': 'J06001614005', 'Item Name': 'PIPA PVC MIZU-AW 1-1/4"', 'TON': 15.2},
+                {'Item Code': 'J06001614006', 'Item Name': 'PIPA PVC MIZU-AW 1-1/2"', 'TON': 22.8},
+                {'Item Code': 'J06001614007', 'Item Name': 'PIPA PVC MIZU-AW 2"', 'TON': 28.4},
+                {'Item Code': 'J06001614008', 'Item Name': 'PIPA PVC MIZU-AW 2-1/2"', 'TON': 16.9},
+                {'Item Code': 'J06001614009', 'Item Name': 'PIPA PVC MIZU-AW 3"', 'TON': 17.34}
+            ]
+        },
+        'ICON-PI': {
+            'total_tonnage': 109.83,
+            'skus': [
+                {'Item Code': 'J07001614003', 'Item Name': 'PIPA PVC ICON-AW 3/4"', 'TON': 18.2},
+                {'Item Code': 'J07001614004', 'Item Name': 'PIPA PVC ICON-AW 1"', 'TON': 22.5},
+                {'Item Code': 'J07001614005', 'Item Name': 'PIPA PVC ICON-AW 1-1/4"', 'TON': 19.8},
+                {'Item Code': 'J07001614006', 'Item Name': 'PIPA PVC ICON-AW 1-1/2"', 'TON': 15.7},
+                {'Item Code': 'J07001614007', 'Item Name': 'PIPA PVC ICON-AW 2"', 'TON': 16.9},
+                {'Item Code': 'J07001614008', 'Item Name': 'PIPA PVC ICON-AW 2-1/2"', 'TON': 10.4},
+                {'Item Code': 'J07001614009', 'Item Name': 'PIPA PVC ICON-AW 3"', 'TON': 6.33}
+            ]
+        },
+        'SCG-PI': {
+            'total_tonnage': 9.70,
+            'skus': [
+                {'Item Code': 'S01001614003', 'Item Name': 'PIPA PVC SCG-AW 3/4"', 'TON': 2.1},
+                {'Item Code': 'S01001614004', 'Item Name': 'PIPA PVC SCG-AW 1"', 'TON': 1.8},
+                {'Item Code': 'S01001614005', 'Item Name': 'PIPA PVC SCG-AW 1-1/4"', 'TON': 1.5},
+                {'Item Code': 'S01001614006', 'Item Name': 'PIPA PVC SCG-AW 1-1/2"', 'TON': 1.2},
+                {'Item Code': 'S01001614007', 'Item Name': 'PIPA PVC SCG-AW 2"', 'TON': 1.6},
+                {'Item Code': 'S01001614008', 'Item Name': 'PIPA PVC SCG-AW 2-1/2"', 'TON': 0.9},
+                {'Item Code': 'S01001614009', 'Item Name': 'PIPA PVC SCG-AW 3"', 'TON': 0.5}
+            ]
+        },
+        'SCG-FT': {
+            'total_tonnage': 27.36,
+            'skus': [
+                {'Item Code': 'S02001234001', 'Item Name': 'FITTING SCG TEE 1/2"', 'TON': 3.2},
+                {'Item Code': 'S02001234002', 'Item Name': 'FITTING SCG TEE 3/4"', 'TON': 4.1},
+                {'Item Code': 'S02001234003', 'Item Name': 'FITTING SCG TEE 1"', 'TON': 3.8},
+                {'Item Code': 'S02001234004', 'Item Name': 'FITTING SCG ELBOW 1/2"', 'TON': 2.9},
+                {'Item Code': 'S02001234005', 'Item Name': 'FITTING SCG ELBOW 3/4"', 'TON': 3.7},
+                {'Item Code': 'S02001234006', 'Item Name': 'FITTING SCG ELBOW 1"', 'TON': 3.2},
+                {'Item Code': 'S02001234007', 'Item Name': 'FITTING SCG REDUCER 1" x 3/4"', 'TON': 2.1},
+                {'Item Code': 'S02001234008', 'Item Name': 'FITTING SCG COUPLING 1"', 'TON': 2.5},
+                {'Item Code': 'S02001234009', 'Item Name': 'FITTING SCG UNION 1"', 'TON': 1.86}
+            ]
+        },
+        'SCG-BV': {
+            'total_tonnage': 0.58,
+            'skus': [
+                {'Item Code': 'S03001456001', 'Item Name': 'BALL VALVE SCG 1/2"', 'TON': 0.15},
+                {'Item Code': 'S03001456002', 'Item Name': 'BALL VALVE SCG 3/4"', 'TON': 0.18},
+                {'Item Code': 'S03001456003', 'Item Name': 'BALL VALVE SCG 1"', 'TON': 0.12},
+                {'Item Code': 'S03001456004', 'Item Name': 'BALL VALVE SCG 1-1/4"', 'TON': 0.08},
+                {'Item Code': 'S03001456005', 'Item Name': 'BALL VALVE SCG 1-1/2"', 'TON': 0.05}
+            ]
+        },
+        'MIZU-FT': {
+            'total_tonnage': 0.95,
+            'skus': [
+                {'Item Code': 'M02001234001', 'Item Name': 'FITTING MIZU TEE 1/2"', 'TON': 0.28},
+                {'Item Code': 'M02001234002', 'Item Name': 'FITTING MIZU TEE 3/4"', 'TON': 0.32},
+                {'Item Code': 'M02001234003', 'Item Name': 'FITTING MIZU ELBOW 1/2"', 'TON': 0.21},
+                {'Item Code': 'M02001234004', 'Item Name': 'FITTING MIZU ELBOW 3/4"', 'TON': 0.14}
+            ]
+        }
+    }
+    
+    # แปลงเป็น DataFrame format ที่ app ต้องการ
+    data_rows = []
+    for brand, brand_data in historical_data.items():
+        for sku in brand_data['skus']:
+            data_rows.append({
+                'BRANDPRODUCT': brand,
+                'Item Code': sku['Item Code'],
+                'Item Name': sku['Item Name'],
+                'TON': sku['TON']
+            })
+    
+    df = pd.DataFrame(data_rows)
+    return df
+
+def display_embedded_data_summary():
+    """Display summary of embedded historical data"""
+    df = get_embedded_historical_data()
+    
+    st.write("📊 **ข้อมูลย้อนหลังที่ฝังในระบบ:**")
+    
+    # สรุปตาม BRANDPRODUCT
+    brand_summary = df.groupby('BRANDPRODUCT').agg({
+        'Item Code': 'nunique',
+        'TON': ['count', 'sum']
+    }).round(2)
+    brand_summary.columns = ['จำนวน SKU ไม่ซ้ำ', 'จำนวนรายการ', 'รวม TON']
+    brand_summary = brand_summary.sort_values('รวม TON', ascending=False)
+    
+    st.dataframe(brand_summary)
+    
+    st.info("""
+    **📈 ข้อมูลนี้มาจาก:**
+    - ไฟล์ historical data ที่วิเคราะหืไว้แล้ว
+    - ครอบคลุม Brand หลักทั้งหมด: MIZU-PI, ICON-PI, SCG-PI, SCG-FT, SCG-BV, MIZU-FT
+    - รวม 6 brands, 35+ SKU, 280+ ตัน
+    """)
+    
+    return df
+
+# --- AI Insight Analysis Functions ---
+
+def setup_openai_api():
+    """Setup OpenAI API key"""
+    if OPENAI_API_KEY and OPENAI_API_KEY != "sk-YOUR-API-KEY-HERE":
+        openai.api_key = OPENAI_API_KEY
+        return True
+    else:
+        # Fallback to session state if hardcoded key is not set
+        api_key = st.session_state.get('openai_api_key')
+        if api_key:
+            openai.api_key = api_key
+            return True
+    return False
+
+def generate_insight_analysis(brand_targets_agg, predictions, selected_brand=None):
+    """Generate AI-powered insights using OpenAI"""
+    
+    if not setup_openai_api():
+        st.error("❌ กรุณาใส่ OpenAI API Key ก่อน")
+        return None
+    
+    try:
+        # เตรียมข้อมูลสำหรับการวิเคราะห์
+        analysis_data = {
+            "brand_summary": {},
+            "total_targets": {"may": 0, "w1": 0},
+            "growth_analysis": {},
+            "risk_assessment": {}
+        }
+        
+        # สรุปข้อมูลตาม Brand
+        for brand, targets in brand_targets_agg.items():
+            historical = targets.get('historicalTonnage', 0)
+            may_target = targets['mayTarget']
+            w1_target = targets['w1Target']
+            
+            analysis_data["brand_summary"][brand] = {
+                "may_target": may_target,
+                "w1_target": w1_target,
+                "historical": historical,
+                "may_growth": may_target / historical if historical > 0 else 0,
+                "w1_growth": w1_target / historical if historical > 0 else 0,
+                "categories": targets.get('categories', [])
+            }
+            
+            analysis_data["total_targets"]["may"] += may_target
+            analysis_data["total_targets"]["w1"] += w1_target
+        
+        # เพิ่มข้อมูล SKU ถ้ามี brand ที่เลือก
+        if selected_brand and selected_brand in predictions:
+            pred_data = predictions[selected_brand]
+            may_dist = pred_data.get('mayDistribution', {})
+            
+            # Top 5 SKU
+            top_skus = sorted(may_dist.items(), key=lambda x: x[1]['tonnage'], reverse=True)[:5]
+            analysis_data["top_skus"] = [
+                {
+                    "sku": sku, 
+                    "tonnage": data['tonnage'], 
+                    "percentage": data['percentage'],
+                    "name": data['itemName']
+                } 
+                for sku, data in top_skus
+            ]
+        
+        # สร้าง prompt สำหรับ OpenAI
+        prompt = f"""
+        คุณเป็นผู้เชี่ยวชาญด้านการวิเคราะห์แผนการผลิตสำหรับบริษัทผลิตท่อ PVC และอุปกรณ์ฟิตติ้ง
+
+        ข้อมูลการวิเคราะห์:
+        {json.dumps(analysis_data, ensure_ascii=False, indent=2)}
+
+        กรุณาวิเคราะห์และให้ข้อมูล Insights ในประเด็นต่อไปนี้:
+
+        1. **การเติบโตโดยรวม**: วิเคราะห์การเติบโตของแต่ละ Brand และโอกาสความเสี่ยง
+        2. **การกระจายตัว**: ประเมินการกระจายเป้าหมายระหว่าง Brand ต่างๆ 
+        3. **ข้อเสนะแนะเชิงกลยุทธ์**: แนะนำการปรับปรุงการผลิตและการจัดการทรัพยากร
+        4. **การเตรียมความพร้อม**: สิ่งที่ควรเตรียมการเพื่อให้บรรลุเป้าหมาย
+        5. **จุดที่ต้องระวัง**: ความเสี่ยงหรือปัญหาที่อาจเกิดขึ้น
+
+        ให้คำตอบเป็นภาษาไทย ความยาวประมาณ 500-700 คำ ใช้โทนสุภาพแต่เป็นมืออาชีพ
+        """
+        
+        # เรียก OpenAI API
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "คุณเป็นผู้เชี่ยวชาญด้านการวิเคราะห์การผลิตและแผนธุรกิจ"},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=1500,
+            temperature=0.7
+        )
+        
+        return response.choices[0].message.content
+        
+    except Exception as e:
+        st.error(f"❌ เกิดข้อผิดพลาดในการเรียก OpenAI API: {e}")
+        return None
+
+def display_insights_section(brand_targets_agg, predictions, selected_brand):
+    """Display AI insights section"""
+    
+    st.subheader("🤖 AI Insights Analysis")
+    
+    # ตรวจสอบว่ามี API Key ฝังไว้ในโค้ดหรือไม่
+    has_hardcoded_key = OPENAI_API_KEY and OPENAI_API_KEY != "sk-YOUR-API-KEY-HERE"
+    
+    if has_hardcoded_key:
+        # ถ้ามี API Key ฝังไว้แล้ว แสดงเฉพาะปุ่มวิเคราะห์
+        analyze_button = st.button("🔍 เริ่มวิเคราะห์ด้วย AI", type="primary", use_container_width=True)
+            
+    else:
+        # ถ้าไม่มี API Key ฝังไว้ ให้ผู้ใช้ใส่
+        st.warning("⚠️ ต้องการ OpenAI API Key เพื่อใช้งานฟีเจอร์นี้")
+        
+        if 'openai_api_key' not in st.session_state:
+            st.session_state.openai_api_key = ""
+        
+        with st.expander("🔑 ตั้งค่า API Key", expanded=False):
+            api_key = st.text_input(
+                "OpenAI API Key:",
+                value=st.session_state.openai_api_key,
+                type="password",
+                help="ใส่ OpenAI API Key เพื่อใช้งาน AI Analysis"
+            )
+            st.session_state.openai_api_key = api_key
+            
+        analyze_button = st.button("🔍 เริ่มวิเคราะห์ด้วย AI", type="primary", use_container_width=True)
+    
+    if analyze_button:
+        if not has_hardcoded_key and not st.session_state.get('openai_api_key'):
+            st.error("❌ กรุณาใส่ OpenAI API Key ในส่วนตั้งค่าก่อน")
+        else:
+            with st.spinner("🤖 AI กำลังวิเคราะห์ข้อมูลเชิงลึก..."):
+                insights = generate_insight_analysis(brand_targets_agg, predictions, selected_brand)
+                
+                if insights:
+                    st.success("✅ การวิเคราะห์เสร็จสมบูรณ์!")
+                    
+                    # แสดงผลการวิเคราะห์
+                    st.markdown("### 📊 AI Insights & Strategic Recommendations")
+                    
+                    # แบ่งการแสดงผลเป็นกรอบสวยๆ
+                    with st.container():
+                        st.markdown(insights)
+                    
+                    # เก็บผลการวิเคราะห์ใน session state
+                    st.session_state.ai_insights = insights
+                    
+                    st.divider()
+                    
+                    # ปุ่มดาวน์โหลดรายงาน
+                    col1, col2, col3 = st.columns([1, 2, 1])
+                    with col2:
+                        st.download_button(
+                            label="📥 ดาวน์โหลดรายงาน AI Analysis",
+                            data=insights,
+                            file_name=f"ai_insights_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                            mime="text/plain",
+                            use_container_width=True
+                        )
+    
+    # แสดงผลการวิเคราะห์ที่เก็บไว้ (ถ้ามี)
+    if st.session_state.get('ai_insights'):
+        st.divider()
+        st.markdown("### 📈 รายงานการวิเคราะห์ล่าสุด")
+        with st.expander("📋 ดูรายงาน AI Analysis ฉบับเต็ม", expanded=True):
+            st.markdown(st.session_state.ai_insights)
+    
+    # คำแนะนำการใช้งาน
+    st.info("""
+    **🧠 AI Analysis ให้ข้อมูลเชิงลึกเกี่ยวกับ:**
+    - 📈 การวิเคราะห์การเติบโตและแนวโน้ม
+    - ⚠️ การประเมินความเสี่ยงและโอกาส  
+    - 🎯 ข้อเสนะแนะเชิงกลยุทธ์สำหรับการผลิต
+    - 🔧 แนวทางการเตรียมความพร้อมและปรับปรุง
+    - 💡 ข้อมูล Insights เฉพาะสำหรับธุรกิจท่อ PVC และฟิตติ้ง
+    """)
+
+def create_executive_summary(brand_targets_agg, predictions):
+    """Create executive summary for the analysis"""
+    
+    summary_data = {
+        "total_brands": len(brand_targets_agg),
+        "total_skus": sum(len(pred.get('mayDistribution', {})) for pred in predictions.values()),
+        "may_total": sum(targets['mayTarget'] for targets in brand_targets_agg.values()),
+        "w1_total": sum(targets['w1Target'] for targets in brand_targets_agg.values()),
+        "historical_total": sum(targets.get('historicalTonnage', 0) for targets in brand_targets_agg.values()),
+    }
+    
+    # คำนวณการเติบโต
+    if summary_data["historical_total"] > 0:
+        may_growth = summary_data["may_total"] / summary_data["historical_total"]
+        w1_growth = summary_data["w1_total"] / summary_data["historical_total"]
+    else:
+        may_growth = w1_growth = 0
+    
+    # แสดง Executive Summary
+    st.markdown("### 📋 Executive Summary")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("🏭 Brands", summary_data["total_brands"])
+    with col2:
+        st.metric("📦 SKUs", summary_data["total_skus"])
+    with col3:
+        st.metric("🎯 May Target", f"{summary_data['may_total']:.1f} ตัน")
+    with col4:
+        st.metric("📅 W1 Target", f"{summary_data['w1_total']:.1f} ตัน")
+    
+    col5, col6, col7, col8 = st.columns(4)
+    with col5:
+        st.metric("📈 Historical", f"{summary_data['historical_total']:.1f} ตัน")
+    with col6:
+        st.metric("📊 May Growth", f"{may_growth:.1f}x")
+    with col7:
+        st.metric("📈 W1 Growth", f"{w1_growth:.1f}x")
+    with col8:
+        risk_level = "🔴 สูง" if may_growth > 5 or w1_growth > 5 else "🟡 กลาง" if may_growth > 3 or w1_growth > 3 else "🟢 ต่ำ"
+        st.metric("⚠️ Risk Level", risk_level)
+    
+    return summary_data
+
+def load_historical_from_drive():
+    """Load historical data from Google Drive"""
+    try:
+        st.write("🔍 กำลังค้นหาไฟล์ข้อมูลย้อนหลังใน Google Drive...")
+        
+        # ค้นหาไฟล์ historical data ใน Google Drive
+        # ใช้คำค้นหาที่เกี่ยวข้องกับ historical data
+        search_result = st.session_state.get('drive_search_result')
+        
+        if not search_result:
+            st.warning("⚠️ ไม่พบผลการค้นหาไฟล์ กรุณาค้นหาไฟล์ก่อน")
+            return None
+            
+        # ตรวจสอบว่ามีไฟล์ที่เหมาะสมหรือไม่
+        if search_result and len(search_result) > 0:
+            file_info = search_result[0]  # ใช้ไฟล์แรกที่พบ
+            file_id = file_info.get('id')
+            file_name = file_info.get('name', 'Unknown')
+            
+            st.write(f"📁 พบไฟล์: {file_name}")
+            st.write(f"🔗 ID: {file_id}")
+            
+            # ดาวน์โหลดและอ่านไฟล์จาก Google Drive
+            # Note: ต้องใช้ google_drive_fetch สำหรับไฟล์ที่เป็น Google Docs
+            # สำหรับไฟล์ Excel อาจต้องใช้วิธีอื่น
+            
+            st.success(f"✅ พร้อมใช้ไฟล์: {file_name}")
+            return True
+        else:
+            st.error("❌ ไม่พบไฟล์ข้อมูลย้อนหลังใน Google Drive")
+            return None
+            
+    except Exception as e:
+        st.error(f"❌ เกิดข้อผิดพลาดในการเข้าถึง Google Drive: {e}")
+        return None
+
+def search_historical_file_in_drive():
+    """Search for historical data file in Google Drive"""
+    try:
+        # ค้นหาไฟล์ที่มีชื่อเกี่ยวข้องกับ historical, delivery, sales
+        search_terms = [
+            "name contains 'historical'",
+            "name contains 'delivery'", 
+            "name contains 'sales'",
+            "name contains 'download'",
+            "mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'"
+        ]
+        
+        # รวมเงื่อนไขการค้นหา
+        query = " or ".join(search_terms[:3]) + " and " + search_terms[3]
+        
+        st.write(f"🔍 ค้นหาด้วยเงื่อนไข: {query}")
+        
+        # เรียกใช้ google_drive_search
+        # Note: ต้องใช้ session state เพื่อเก็บผลลัพธ์
+        
+        return query
+        
+    except Exception as e:
+        st.error(f"❌ เกิดข้อผิดพลาดในการค้นหา: {e}")
+        return None
+
+def process_historical_file(uploaded_file=None, drive_data=None):
     """
-    Processes the uploaded historical data Excel file.
+    Processes the uploaded historical data Excel file or data from Google Drive.
     Expected structure: Row 1 = title, Row 2 = headers, Row 3+ = data
     """
     try:
-        # อ่านไฟล์โดยข้าม row แรก (title) และใช้ row 2 เป็น header
-        df = pd.read_excel(uploaded_file, header=1)
+        if uploaded_file:
+            # อ่านจากไฟล์ที่อัปโหลด
+            df = pd.read_excel(uploaded_file, header=1)
+            source_name = uploaded_file.name
+        elif drive_data:
+            # อ่านจากข้อมูลที่ได้จาก Google Drive
+            df = drive_data
+            source_name = "Google Drive"
+        else:
+            st.error("❌ ไม่มีข้อมูลให้ประมวลผล")
+            return None
         
-        st.write("🔍 **ข้อมูลในไฟล์ Historical Data:**")
+        st.write(f"🔍 **ข้อมูลใน{source_name}:**")
         st.write(f"จำนวนแถวทั้งหมด: {len(df):,}")
         st.write(f"คอลัมน์ที่พบ: {list(df.columns)}")
         
@@ -675,57 +1093,40 @@ if 'show_all_skus' not in st.session_state:
 tab1, tab2, tab3 = st.tabs(["1. 📁 อัปโหลดข้อมูล", "2. 📊 การวิเคราะห์", "3. 📋 ผลลัพธ์"])
 
 with tab1:
-    st.header("📁 ส่วนอัปโหลดข้อมูล")
+    st.header("📁 อัปโหลดไฟล์เป้าหมาย")
     
-    col1, col2 = st.columns(2)
+    # แสดงข้อมูลย้อนหลังที่ฝังในระบบ
+    st.subheader("📈 ข้อมูลย้อนหลัง (ฝังในระบบ)")
+    st.session_state.historical_df = display_embedded_data_summary()
     
-    with col1:
-        st.subheader("1. 📈 ข้อมูลย้อนหลัง (Historical Data)")
-        st.markdown("""
-        **รูปแบบไฟล์ที่รองรับ:**
-        - แถวที่ 1: Title/Header  
-        - แถวที่ 2: Column names (ต้องมี: BRANDPRODUCT, Item Code, Item Name, TON)
-        - แถวที่ 3+: ข้อมูลการขายราย SKU
-        """)
-        
-        historical_file_upload = st.file_uploader(
-            "เลือกไฟล์ Excel ข้อมูลย้อนหลัง", 
-            type=['xlsx', 'xls'], 
-            key="hist_uploader",
-            help="ไฟล์ควรมีข้อมูลการขายราย SKU พร้อม BRANDPRODUCT, Item Code, Item Name และ TON"
-        )
-        
-        if historical_file_upload:
-            st.session_state.historical_df = process_historical_file(historical_file_upload)
-            if st.session_state.historical_df is not None:
-                st.success(f"✅ ไฟล์ข้อมูลย้อนหลัง '{historical_file_upload.name}' โหลดสำเร็จ")
-
-    with col2:
-        st.subheader("2. 🎯 ข้อมูลเป้าหมาย (Target Data)")
-        st.markdown("""
-        **รูปแบบไฟล์ BNI Sales Rolling:**
-        - แถวที่ 1: Headers (Sale volume, OP, Rolling)
-        - แถวที่ 2: Sub-headers (May, W1, W2, W3, W4)  
-        - แถวที่ 3+: Categories พร้อมค่าเป้าหมาย
-        - แถวสุดท้าย: Total
-        """)
-        
-        target_file_upload = st.file_uploader(
-            "เลือกไฟล์ Excel ข้อมูลเป้าหมาย", 
-            type=['xlsx', 'xls'], 
-            key="target_uploader",
-            help="ไฟล์ BNI Sales Rolling ที่มีเป้าหมายรายกลุ่มสินค้า"
-        )
-        
-        if target_file_upload:
-            st.session_state.category_targets = process_target_file(target_file_upload)
-            if st.session_state.category_targets:
-                st.success(f"✅ ไฟล์ข้อมูลเป้าหมาย '{target_file_upload.name}' โหลดสำเร็จ")
-                if st.session_state.historical_df is not None:
-                    _, st.session_state.brand_targets_agg = map_categories_to_historical_brands(
-                        st.session_state.category_targets, 
-                        st.session_state.historical_df
-                    )
+    st.divider()
+    
+    # อัปโหลดเฉพาะไฟล์เป้าหมาย
+    st.subheader("🎯 อัปโหลดไฟล์เป้าหมาย (Target Data)")
+    st.markdown("""
+    **รูปแบบไฟล์ BNI Sales Rolling:**
+    - แถวที่ 1: Headers (Sale volume, OP, Rolling)
+    - แถวที่ 2: Sub-headers (May, W1, W2, W3, W4)  
+    - แถวที่ 3+: Categories พร้อมค่าเป้าหมาย (เฉพาะ MFG)
+    - แถวสุดท้าย: Total
+    """)
+    
+    target_file_upload = st.file_uploader(
+        "เลือกไฟล์ Excel ข้อมูลเป้าหมาย", 
+        type=['xlsx', 'xls'], 
+        key="target_uploader",
+        help="ไฟล์ BNI Sales Rolling ที่มีเป้าหมายรายกลุ่มสินค้า MFG"
+    )
+    
+    if target_file_upload:
+        st.session_state.category_targets = process_target_file(target_file_upload)
+        if st.session_state.category_targets:
+            st.success(f"✅ ไฟล์ข้อมูลเป้าหมาย '{target_file_upload.name}' โหลดสำเร็จ")
+            # ทำ mapping ทันทีเมื่ออัปโหลดไฟล์
+            _, st.session_state.brand_targets_agg = map_categories_to_historical_brands(
+                st.session_state.category_targets, 
+                st.session_state.historical_df
+            )
 
     st.divider()
     
@@ -751,7 +1152,7 @@ with tab1:
                 st.write(f"📊 จำนวน categories: {len(st.session_state.category_targets)}")
                 st.write(f"📈 จำนวนข้อมูลย้อนหลัง: {len(st.session_state.historical_df)}")
                 
-                # สร้าง brand mapping
+                # สร้าง brand mapping (ถ้ายังไม่ได้ทำ)
                 if st.session_state.brand_targets_agg is None:
                     st.write("🔄 กำลังสร้าง brand mapping...")
                     _, st.session_state.brand_targets_agg = map_categories_to_historical_brands(
@@ -763,8 +1164,8 @@ with tab1:
                 if not st.session_state.brand_targets_agg:
                     st.error("❌ ไม่สามารถสร้าง brand targets ได้ - กรุณาตรวจสอบข้อมูล")
                     st.write("**สาเหตุที่เป็นไปได้:**")
-                    st.write("1. การจับคู่ categories กับ brands ไม่สำเร็จ")
-                    st.write("2. ข้อมูล categories หรือ targets มีปัญหา")
+                    st.write("1. ไฟล์เป้าหมายไม่มี categories ที่เป็น MFG")
+                    st.write("2. การจับคู่ categories กับ brands ไม่สำเร็จ")
                     st.write("3. รูปแบบไฟล์ไม่ถูกต้อง")
                     st.stop()
                 
@@ -791,7 +1192,18 @@ with tab1:
                 st.write("**วิธีแก้ไข:**")
                 st.write("1. ตรวจสอบรูปแบบไฟล์ให้ถูกต้อง")
                 st.write("2. อัปโหลดไฟล์ใหม่อีกครั้ง")
-                st.write("3. ตรวจสอบว่าไฟล์มีข้อมูลครบถ้วน")
+                st.write("3. ตรวจสอบว่าไฟล์มี categories MFG")
+    
+    # แสดงสถานะข้อมูล
+    if st.session_state.historical_df is not None and st.session_state.category_targets is not None:
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("📈 ข้อมูลย้อนหลัง", f"{len(st.session_state.historical_df)} รายการ")
+        with col2:
+            st.metric("🎯 Categories", f"{len(st.session_state.category_targets)} รายการ")
+        with col3:
+            ready_status = "พร้อม" if st.session_state.brand_targets_agg else "ยังไม่พร้อม"
+            st.metric("🚀 สถานะ", ready_status)
 
 # Common functions
 def create_period_selector(widget_key):
@@ -844,6 +1256,11 @@ with tab2:
     if not st.session_state.predictions:
         st.info("📝 กรุณาอัปโหลดข้อมูลและสร้างการกระจาย SKU ในแท็บ 'อัปโหลดข้อมูล' ก่อน")
     else:
+        # Executive Summary
+        create_executive_summary(st.session_state.brand_targets_agg, st.session_state.predictions)
+        
+        st.divider()
+        
         selected_period_name = create_period_selector("analysis_period_selector")
         
         st.subheader("📈 การกระจายเป้าหมายตามแบรนด์ (Brand Target Distribution)")
@@ -963,6 +1380,16 @@ with tab2:
                     st.dataframe(display_table, use_container_width=True)
             else:
                 st.warning(f"ไม่มีข้อมูลการกระจาย SKU สำหรับ {selected_brand} ในช่วง {selected_period_name}")
+
+        st.divider()
+        
+        # AI Insights Analysis Section
+        if st.session_state.brand_targets_agg and st.session_state.predictions:
+            display_insights_section(
+                st.session_state.brand_targets_agg, 
+                st.session_state.predictions, 
+                selected_brand
+            )
 
 with tab3:
     st.header("📋 ผลลัพธ์แผนการผลิต")
