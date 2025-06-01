@@ -29,14 +29,16 @@ def process_historical_file(uploaded_file):
 def process_target_file(uploaded_file):
     """
     Processes the uploaded target data Excel file.
-    This version is more flexible and searches for the 'Category' header row.
+    This version is more flexible, case-insensitive, and searches for the 'Category' header row.
     """
     try:
         df = pd.read_excel(uploaded_file, sheet_name=0, header=None)
         
         header_row_idx = -1
+        # Find the row index where the header 'Category' is located (case-insensitive)
         for i, row in df.iterrows():
-            if str(row.iloc[TARGET_CATEGORY_COL]).strip() == 'Category':
+            # --- FIX: Make the check case-insensitive ---
+            if str(row.iloc[TARGET_CATEGORY_COL]).strip().lower() == 'category':
                 header_row_idx = i
                 break
         
@@ -48,7 +50,7 @@ def process_target_file(uploaded_file):
         end_row_idx = len(df)
 
         for i in range(start_row_idx, len(df)):
-            if str(df.iloc[i, TARGET_CATEGORY_COL]).strip() == 'Total':
+            if str(df.iloc[i, TARGET_CATEGORY_COL]).strip().lower() == 'total':
                 end_row_idx = i
                 break
         
@@ -183,7 +185,6 @@ def generate_excel_download(predictions_data, selected_period_key):
             if dist_data:
                 df_dist = pd.DataFrame.from_dict(dist_data, orient='index').reset_index()
                 
-                # Define expected columns and their new names for the Excel file
                 rename_map = {
                     'index': 'SKU',
                     'itemName': 'Product Name',
@@ -191,22 +192,17 @@ def generate_excel_download(predictions_data, selected_period_key):
                     'percentage': 'Percentage'
                 }
                 
-                # Rename columns that exist in the DataFrame
                 df_dist.rename(columns=rename_map, inplace=True)
                 
-                # Format the 'Percentage' column before ordering
                 if 'Percentage' in df_dist.columns:
                     df_dist['Percentage'] = (df_dist['Percentage'] * 100).round(2)
                 
                 df_dist = df_dist.sort_values(by='Tonnage', ascending=False)
                 
-                # Define the final order of columns for the output
                 final_columns_order = ['SKU', 'Product Name', 'Tonnage', 'Percentage']
                 
-                # Filter DataFrame to only include columns that exist after renaming, in the desired order
                 output_df = df_dist.reindex(columns=final_columns_order)
                 
-                # Sanitize sheet name for Excel limitations
                 sheet_name = brand.replace('/', '-').replace('\\', '-')
                 sheet_name = sheet_name[:31]
                 
