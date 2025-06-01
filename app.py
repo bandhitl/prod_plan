@@ -35,7 +35,6 @@ def process_target_file(uploaded_file):
         df = pd.read_excel(uploaded_file, sheet_name=0, header=None)
         
         header_row_idx = -1
-        # Find the row index where the header 'Category' is located
         for i, row in df.iterrows():
             if str(row.iloc[TARGET_CATEGORY_COL]).strip() == 'Category':
                 header_row_idx = i
@@ -48,7 +47,6 @@ def process_target_file(uploaded_file):
         start_row_idx = header_row_idx + 1
         end_row_idx = len(df)
 
-        # Find the end row (before "Total")
         for i in range(start_row_idx, len(df)):
             if str(df.iloc[i, TARGET_CATEGORY_COL]).strip() == 'Total':
                 end_row_idx = i
@@ -80,7 +78,7 @@ def map_categories_to_historical_brands(category_targets):
 
     for category, targets in category_targets.items():
         matching_brand = None
-        cat_lower = str(category).lower() # Ensure category is string and lowercased for matching
+        cat_lower = str(category).lower()
 
         if 'scg' in cat_lower:
             if 'pipe' in cat_lower or 'conduit' in cat_lower:
@@ -101,7 +99,7 @@ def map_categories_to_historical_brands(category_targets):
         elif 'ball valve (trading)' in cat_lower:
             matching_brand = 'SCG-BV'
         elif 'solvent' in cat_lower or 'glue' in cat_lower:
-            matching_brand = '-' # Skip or handle as per original logic
+            matching_brand = '-'
 
         brand_mapping[category] = matching_brand
 
@@ -155,15 +153,13 @@ def predict_sku_distribution(brand_targets_agg, historical_df):
             percentage = sku_row['Percentage']
             item_name = sku_row['Item Name']
 
-            if percentage >= 0.001: # Only include SKUs with > 0.1% contribution
-                # May Distribution
+            if percentage >= 0.001:
                 predicted_tonnage_may = may_target_val * percentage
                 predictions[brand]['mayDistribution'][sku_code] = {
                     'tonnage': predicted_tonnage_may,
                     'percentage': percentage,
                     'itemName': item_name
                 }
-                # W1 Distribution
                 predicted_tonnage_w1 = w1_target_val * percentage
                 predictions[brand]['w1Distribution'][sku_code] = {
                     'tonnage': predicted_tonnage_w1,
@@ -176,47 +172,26 @@ def predict_sku_distribution(brand_targets_agg, historical_df):
 def generate_excel_download(predictions_data, selected_period_key):
     """Generates an Excel file for download from the predictions."""
     output = io.BytesIO()
-    writer = pd.ExcelWriter(output, engine='openpyxl')
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        for brand, data in predictions_data.items():
+            period_target_key = 'mayTarget' if selected_period_key == 'may' else 'w1Target'
+            period_dist_key = 'mayDistribution' if selected_period_key == 'may' else 'w1Distribution'
+            period_name = 'May' if selected_period_key == 'may' else 'Week 1'
+
+            dist_data = data[period_dist_key]
+            if dist_data:
+                df_dist = pd.DataFrame.from_dict(dist_data, orient='index')
+                df_dist.index.name = 'SKU'
+                df_dist.reset_index(inplace=True)
+                df_dist = df_dist[['SKU', 'itemName', 'tonnage', 'percentage']]
+                df_dist.columns = ['SKU', 'Product Name', 'Tonnage', 'Percentage']
+                df_dist['Percentage'] = df_dist['Percentage'] * 100
+                df_dist = df_dist.sort_values(by='Tonnage', ascending=False)
+                
+                sheet_name = brand.replace('/', '-').replace('\\', '-') # Sanitize sheet name
+                sheet_name = sheet_name[:31] # Excel sheet name limit
+                df_dist.to_excel(writer, index=False, sheet_name=sheet_name)
     
-    all_data_frames = []
-
-    for brand, data in predictions_data.items():
-        period_target_key = 'mayTarget' if selected_period_key == 'may' else 'w1Target'
-        period_dist_key = 'mayDistribution' if selected_period_key == 'may' else 'w1Distribution'
-        
-        brand_info = pd.DataFrame({
-            'ข้อมูล': ['Brand', 'Target (Tons)', 'Period', 'Categories'],
-            'รายละเอียด': [
-                brand, 
-                data[period_target_key],
-                'May' if selected_period_key == 'may' else 'Week 1',
-                ', '.join(data['categories'])
-            ]
-        })
-        all_data_frames.append(brand_info)
-        all_data_frames.append(pd.DataFrame()) # Blank row
-
-        dist_data = data[period_dist_key]
-        if dist_data:
-            df_dist = pd.DataFrame.from_dict(dist_data, orient='index')
-            df_dist.index.name = 'SKU'
-            df_dist.reset_index(inplace=True)
-            df_dist = df_dist[['SKU', 'itemName', 'tonnage', 'percentage']]
-            df_dist.columns = ['SKU', 'Product Name', 'Tonnage (Tons)', 'Percentage (%)']
-            df_dist['Percentage (%)'] = df_dist['Percentage (%)'] * 100
-            df_dist = df_dist.sort_values(by='Tonnage (Tons)', ascending=False)
-            all_data_frames.append(df_dist)
-        else:
-            all_data_frames.append(pd.DataFrame({'Message': [f"No SKU distribution data for {brand} in this period."]}))
-        
-        all_data_frames.append(pd.DataFrame()) # Blank row
-        all_data_frames.append(pd.DataFrame()) # Another blank row
-
-    if all_data_frames:
-        final_df = pd.concat(all_data_frames, ignore_index=True)
-        final_df.to_excel(writer, index=False, sheet_name=f"Production Plan - {'May' if selected_period_key == 'may' else 'W1'}")
-    
-    writer.close()
     processed_data = output.getvalue()
     return processed_data
 
@@ -234,16 +209,11 @@ if 'brand_targets_agg' not in st.session_state:
     st.session_state.brand_targets_agg = None
 if 'predictions' not in st.session_state:
     st.session_state.predictions = None
-if 'sku_details_map' not in st.session_state:
-    st.session_state.sku_details_map = None
-if 'active_tab' not in st.session_state:
-    st.session_state.active_tab = "Upload Data"
+# --- KEY CHANGE: Unifying state for selectors ---
 if 'selected_period' not in st.session_state:
-    st.session_state.selected_period = 'may' # 'may' or 'w1'
-if 'selected_brand_analysis' not in st.session_state:
-    st.session_state.selected_brand_analysis = None
-if 'selected_brand_results' not in st.session_state:
-    st.session_state.selected_brand_results = None
+    st.session_state.selected_period = 'may'
+if 'selected_brand' not in st.session_state:
+    st.session_state.selected_brand = None
 if 'show_all_skus' not in st.session_state:
     st.session_state.show_all_skus = False
 
@@ -273,170 +243,165 @@ with tab1:
                 if st.session_state.historical_df is not None:
                     _, st.session_state.brand_targets_agg = map_categories_to_historical_brands(st.session_state.category_targets)
 
-
     if st.button("สร้างการกระจาย SKU (Generate SKU Distribution)", disabled=not (st.session_state.historical_df is not None and st.session_state.category_targets is not None)):
         with st.spinner("กำลังประมวลผลและสร้างการคาดการณ์..."):
             if st.session_state.brand_targets_agg is None: 
                  _, st.session_state.brand_targets_agg = map_categories_to_historical_brands(st.session_state.category_targets)
 
             if st.session_state.brand_targets_agg:
-                st.session_state.predictions, st.session_state.sku_details_map = predict_sku_distribution(
+                st.session_state.predictions, _ = predict_sku_distribution(
                     st.session_state.brand_targets_agg, 
                     st.session_state.historical_df
                 )
                 st.success("การสร้างการกระจาย SKU เสร็จสมบูรณ์! กรุณาไปที่แท็บ 'Analysis' หรือ 'Results'")
+                # --- KEY CHANGE: Set the unified selected_brand state ---
                 if st.session_state.predictions:
-                    first_brand = next(iter(st.session_state.predictions), None)
-                    st.session_state.selected_brand_analysis = first_brand
-                    st.session_state.selected_brand_results = first_brand
+                    st.session_state.selected_brand = next(iter(st.session_state.predictions), None)
             else:
                 st.error("ไม่สามารถ map categories กับ brands ได้ หรือไม่มีข้อมูล brand targets")
 
+# --- Common period selector logic ---
+def create_period_selector(widget_key):
+    period_options = {'may': 'May', 'w1': 'Week 1'}
+    period_keys = list(period_options.keys())
+    # Set index based on the unified session state
+    try:
+        current_period_index = period_keys.index(st.session_state.selected_period)
+    except ValueError:
+        current_period_index = 0 # Default to first item if state is somehow invalid
+        st.session_state.selected_period = period_keys[0]
+    
+    # Update the unified session state with the new selection
+    st.session_state.selected_period = st.radio(
+        "เลือกช่วงเวลา (Select Period):",
+        options=period_keys,
+        format_func=lambda x: period_options[x],
+        horizontal=True,
+        index=current_period_index,
+        key=widget_key
+    )
+    return period_options[st.session_state.selected_period]
+
+# --- Common brand selector logic ---
+def create_brand_selector(widget_key):
+    if not st.session_state.predictions:
+        return None
+        
+    brand_list = list(st.session_state.predictions.keys())
+    if not brand_list:
+        st.warning("ไม่มีข้อมูลการคาดการณ์สำหรับแบรนด์ใดๆ")
+        return None
+
+    # Set index based on the unified session state
+    if st.session_state.selected_brand not in brand_list:
+         st.session_state.selected_brand = brand_list[0]
+    
+    try:
+        current_brand_index = brand_list.index(st.session_state.selected_brand)
+    except ValueError:
+        current_brand_index = 0 # Default to first item
+        st.session_state.selected_brand = brand_list[0]
+
+    # Update the unified session state with the new selection
+    st.session_state.selected_brand = st.selectbox(
+        "เลือกแบรนด์ (Select Brand):", 
+        options=brand_list,
+        index=current_brand_index,
+        key=widget_key
+    )
+    return st.session_state.selected_brand
 
 with tab2:
     st.header("การวิเคราะห์ข้อมูล")
     if not st.session_state.predictions:
         st.info("กรุณาอัปโหลดข้อมูลและสร้างการกระจาย SKU ในแท็บ 'Upload Data' ก่อน")
     else:
-        period_options = {'may': 'May', 'w1': 'Week 1'}
-        st.session_state.selected_period = st.radio(
-            "เลือกช่วงเวลา (Select Period):",
-            options=list(period_options.keys()),
-            format_func=lambda x: period_options[x],
-            horizontal=True,
-            key="analysis_period_selector"
-        )
+        # --- KEY CHANGE: Use unified selector functions ---
+        selected_period_name = create_period_selector("analysis_period_selector")
         
         st.subheader("การกระจายเป้าหมายตามแบรนด์ (Brand Target Distribution)")
         if st.session_state.brand_targets_agg:
             brand_target_data = []
             target_key = 'mayTarget' if st.session_state.selected_period == 'may' else 'w1Target'
             for brand, targets in st.session_state.brand_targets_agg.items():
-                if targets[target_key] > 0 :
+                if targets[target_key] > 0:
                     brand_target_data.append({'Brand': brand, 'Tonnage': targets[target_key]})
             
             if brand_target_data:
                 df_brand_targets = pd.DataFrame(brand_target_data)
-                fig_brand_targets = px.bar(df_brand_targets, x='Brand', y='Tonnage', title=f"Brand Targets for {period_options[st.session_state.selected_period]}",
+                fig_brand_targets = px.bar(df_brand_targets, x='Brand', y='Tonnage', title=f"Brand Targets for {selected_period_name}",
                                            labels={'Tonnage':'Tonnage (Tons)'})
                 st.plotly_chart(fig_brand_targets, use_container_width=True)
-            else:
-                st.info(f"ไม่มีข้อมูลเป้าหมายแบรนด์สำหรับช่วงเวลา {period_options[st.session_state.selected_period]}")
 
         st.divider()
         st.subheader("การกระจาย SKU (SKU Distribution)")
         
-        brand_list = list(st.session_state.predictions.keys())
-        if not brand_list:
-            st.warning("ไม่มีข้อมูลการคาดการณ์สำหรับแบรนด์ใดๆ")
-        else:
-            if st.session_state.selected_brand_analysis not in brand_list:
-                 st.session_state.selected_brand_analysis = brand_list[0] if brand_list else None
+        col_brand_sel, col_toggle_sku = st.columns([3,1])
+        with col_brand_sel:
+            # --- KEY CHANGE: Use unified selector functions ---
+            selected_brand = create_brand_selector("analysis_brand_selector")
+        with col_toggle_sku:
+             st.session_state.show_all_skus = st.checkbox("แสดง SKU ทั้งหมด (Show All SKUs)", value=st.session_state.show_all_skus, key="show_all_skus_toggle")
 
-            col_brand_sel, col_toggle_sku = st.columns([3,1])
-            with col_brand_sel:
-                st.session_state.selected_brand_analysis = st.selectbox(
-                    "เลือกแบรนด์ (Select Brand):", 
-                    options=brand_list, 
-                    index=brand_list.index(st.session_state.selected_brand_analysis) if st.session_state.selected_brand_analysis in brand_list else 0,
-                    key="analysis_brand_selector"
-                )
-            with col_toggle_sku:
-                 st.session_state.show_all_skus = st.checkbox("แสดง SKU ทั้งหมด (Show All SKUs)", value=st.session_state.show_all_skus, key="show_all_skus_toggle")
+        if selected_brand:
+            brand_data = st.session_state.predictions.get(selected_brand)
+            dist_key = 'mayDistribution' if st.session_state.selected_period == 'may' else 'w1Distribution'
+            sku_distribution = brand_data.get(dist_key)
 
+            if sku_distribution:
+                df_sku_dist = pd.DataFrame.from_dict(sku_distribution, orient='index').reset_index()
+                df_sku_dist.rename(columns={'index': 'SKU', 'itemName': 'Product Name', 'tonnage': 'Tonnage'}, inplace=True)
+                df_sku_dist = df_sku_dist.sort_values(by='Tonnage', ascending=False)
+                
+                display_df_sku = df_sku_dist if st.session_state.show_all_skus else df_sku_dist.head(10)
+                
+                if not display_df_sku.empty:
+                    fig_sku_bar = px.bar(display_df_sku, y='SKU', x='Tonnage', orientation='h',
+                                         title=f"SKU Distribution for {selected_brand} ({selected_period_name})",
+                                         labels={'Tonnage':'Tonnage (Tons)'}, hover_data=['Product Name'])
+                    fig_sku_bar.update_layout(yaxis={'categoryorder':'total ascending'})
+                    st.plotly_chart(fig_sku_bar, use_container_width=True)
 
-            if st.session_state.selected_brand_analysis:
-                brand_data = st.session_state.predictions.get(st.session_state.selected_brand_analysis)
-                if brand_data:
-                    dist_key = 'mayDistribution' if st.session_state.selected_period == 'may' else 'w1Distribution'
-                    sku_distribution = brand_data[dist_key]
+                    top_n_pie = 5
+                    df_pie_data = df_sku_dist.head(top_n_pie).copy()
+                    if len(df_sku_dist) > top_n_pie:
+                        others_tonnage = df_sku_dist.iloc[top_n_pie:]['Tonnage'].sum()
+                        if others_tonnage > 0.01:
+                            others_row = pd.DataFrame([{'SKU': 'Others', 'Product Name': 'Other SKUs', 'Tonnage': others_tonnage}])
+                            df_pie_data = pd.concat([df_pie_data, others_row], ignore_index=True)
 
-                    if sku_distribution:
-                        df_sku_dist = pd.DataFrame.from_dict(sku_distribution, orient='index')
-                        df_sku_dist.reset_index(inplace=True)
-                        df_sku_dist.rename(columns={'index': 'SKU', 'itemName': 'Product Name', 'tonnage': 'Tonnage'}, inplace=True)
-                        df_sku_dist = df_sku_dist.sort_values(by='Tonnage', ascending=False)
-
-                        display_df_sku = df_sku_dist if st.session_state.show_all_skus else df_sku_dist.head(10)
-                        if not display_df_sku.empty:
-                            fig_sku_bar = px.bar(display_df_sku, y='SKU', x='Tonnage', orientation='h',
-                                                 title=f"SKU Distribution for {st.session_state.selected_brand_analysis} ({period_options[st.session_state.selected_period]})",
-                                                 labels={'Tonnage':'Tonnage (Tons)'},
-                                                 hover_data=['Product Name'])
-                            fig_sku_bar.update_layout(yaxis={'categoryorder':'total ascending'})
-                            st.plotly_chart(fig_sku_bar, use_container_width=True)
-
-                            top_n_pie = 5
-                            df_pie_data = df_sku_dist.head(top_n_pie).copy()
-                            if len(df_sku_dist) > top_n_pie:
-                                others_tonnage = df_sku_dist.iloc[top_n_pie:]['Tonnage'].sum()
-                                if others_tonnage > 0.01 :
-                                    df_pie_data.loc[len(df_pie_data)] = ['Others', 'Other SKUs', others_tonnage, 0]
-
-                            if not df_pie_data.empty:
-                                fig_sku_pie = px.pie(df_pie_data, values='Tonnage', names='SKU', 
-                                                     title=f"Top SKUs for {st.session_state.selected_brand_analysis} ({period_options[st.session_state.selected_period]})",
-                                                     hover_data=['Product Name'])
-                                st.plotly_chart(fig_sku_pie, use_container_width=True)
-                        else:
-                            st.info(f"ไม่มีข้อมูล SKU distribution สำหรับแบรนด์ {st.session_state.selected_brand_analysis} ในช่วงเวลานี้")
-                    else:
-                        st.info(f"ไม่มีข้อมูล SKU distribution สำหรับแบรนด์ {st.session_state.selected_brand_analysis} ในช่วงเวลานี้")
-                else:
-                    st.warning(f"ไม่พบข้อมูลสำหรับแบรนด์ {st.session_state.selected_brand_analysis}")
+                    fig_sku_pie = px.pie(df_pie_data, values='Tonnage', names='SKU', 
+                                         title=f"Top SKUs for {selected_brand} ({selected_period_name})", hover_data=['Product Name'])
+                    st.plotly_chart(fig_sku_pie, use_container_width=True)
 
 with tab3:
     st.header("ผลลัพธ์แผนการผลิต")
     if not st.session_state.predictions:
         st.info("กรุณาอัปโหลดข้อมูลและสร้างการกระจาย SKU ในแท็บ 'Upload Data' ก่อน")
     else:
-        period_options = {'may': 'May', 'w1': 'Week 1'}
-        st.radio(
-            "เลือกช่วงเวลา (Select Period):",
-            options=list(period_options.keys()),
-            format_func=lambda x: period_options[x],
-            horizontal=True,
-            key="results_period_selector"
-        )
-        
-        brand_list_results = list(st.session_state.predictions.keys())
-        if not brand_list_results:
-            st.warning("ไม่มีข้อมูลการคาดการณ์สำหรับแบรนด์ใดๆ")
-        else:
-            if st.session_state.selected_brand_results not in brand_list_results:
-                 st.session_state.selected_brand_results = brand_list_results[0] if brand_list_results else None
+        # --- KEY CHANGE: Use unified selector functions ---
+        create_period_selector("results_period_selector")
+        selected_brand_res = create_brand_selector("results_brand_selector")
 
-            st.session_state.selected_brand_results = st.selectbox(
-                "เลือกแบรนด์ (Select Brand):", 
-                options=brand_list_results,
-                index=brand_list_results.index(st.session_state.selected_brand_results) if st.session_state.selected_brand_results in brand_list_results else 0,
-                key="results_brand_selector"
-            )
+        if selected_brand_res:
+            brand_data_res = st.session_state.predictions.get(selected_brand_res)
+            dist_key_res = 'mayDistribution' if st.session_state.selected_period == 'may' else 'w1Distribution'
+            sku_distribution_res = brand_data_res.get(dist_key_res)
 
-            if st.session_state.selected_brand_results:
-                brand_data_res = st.session_state.predictions.get(st.session_state.selected_brand_results)
-                if brand_data_res:
-                    dist_key_res = 'mayDistribution' if st.session_state.selected_period == 'may' else 'w1Distribution'
-                    sku_distribution_res = brand_data_res[dist_key_res]
+            if sku_distribution_res:
+                df_results = pd.DataFrame.from_dict(sku_distribution_res, orient='index').reset_index()
+                df_results.rename(columns={'index': 'SKU', 'itemName': 'Product Name', 'tonnage': 'Tonnage', 'percentage': 'Percentage'}, inplace=True)
+                df_results['Percentage'] = (df_results['Percentage'] * 100).round(2).astype(str) + '%'
+                df_results['Tonnage'] = df_results['Tonnage'].round(4)
+                df_results = df_results[['SKU', 'Product Name', 'Tonnage', 'Percentage']].sort_values(by='Tonnage', ascending=False)
+                
+                st.dataframe(df_results, use_container_width=True)
 
-                    if sku_distribution_res:
-                        df_results = pd.DataFrame.from_dict(sku_distribution_res, orient='index')
-                        df_results.reset_index(inplace=True)
-                        df_results.rename(columns={'index': 'SKU', 'itemName': 'Product Name', 'tonnage': 'Tonnage', 'percentage': 'Percentage'}, inplace=True)
-                        df_results['Percentage'] = (df_results['Percentage'] * 100).round(2).astype(str) + '%'
-                        df_results['Tonnage'] = df_results['Tonnage'].round(4)
-                        df_results = df_results[['SKU', 'Product Name', 'Tonnage', 'Percentage']].sort_values(by='Tonnage', ascending=False)
-                        
-                        st.dataframe(df_results, use_container_width=True)
-                    else:
-                        st.info(f"ไม่มีข้อมูลผลลัพธ์สำหรับแบรนด์ {st.session_state.selected_brand_results} ในช่วงเวลานี้")
-                else:
-                    st.warning(f"ไม่พบข้อมูลสำหรับแบรนด์ {st.session_state.selected_brand_results}")
-        
         if st.session_state.predictions:
+            # Modified to generate one sheet per brand for the download
             excel_bytes = generate_excel_download(st.session_state.predictions, st.session_state.selected_period)
             st.download_button(
-                label="ดาวน์โหลดผลลัพธ์เป็น Excel (Download Results as Excel)",
+                label="ดาวน์โหลดผลลัพธ์ทั้งหมดเป็น Excel (Download All Results as Excel)",
                 data=excel_bytes,
                 file_name=f"production_plan_{st.session_state.selected_period}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
