@@ -4,9 +4,14 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 import json
 import numpy as np
+
+from openai_utils import (
+    setup_openai_api,
+    OPENAI_AVAILABLE,
+    OPENAI_API_KEY,
+)
 
 def calculate_risk_score(may_target, historical, w1_target):
     """Calculate risk score for brand (1-10 scale) - Fixed version"""
@@ -454,3 +459,22 @@ def display_recommendations(ai_analysis):
 def display_insights_section(brand_targets_agg, predictions, selected_brand):
     """Updated main function to use enhanced insights"""
     display_enhanced_insights_section(brand_targets_agg, predictions, selected_brand)
+
+
+def main():
+    """Streamlit entry point"""
+    st.set_page_config(page_title="Production Planning Insights", layout="wide")
+    st.title("Production Planning Insights")
+
+    # Placeholder demo data
+    demo_brand_targets = {
+        "BrandA": {"mayTarget": 120.0, "w1Target": 30.0, "historicalTonnage": 100.0},
+        "BrandB": {"mayTarget": 80.0, "w1Target": 20.0, "historicalTonnage": 70.0},
+    }
+    demo_predictions = {}
+
+    display_insights_section(demo_brand_targets, demo_predictions, None)
+
+
+if __name__ == "__main__":
+    main()
