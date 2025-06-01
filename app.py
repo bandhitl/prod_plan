@@ -25,67 +25,112 @@ def process_historical_file(uploaded_file):
 
 def process_target_file(uploaded_file):
     """
-    Processes the target file with a robust method to find the data table
-    by searching for the 'Category' header across columns and rows.
+    Processes the BNI Sales Rolling target file with the specific structure:
+    Row 1: Headers with "May" and "W1" etc.
+    Row 2: Sub-headers 
+    Row 3+: Category data with tonnage values
+    Last row: Total
     """
     try:
+        # อ่านไฟล์โดยไม่กำหนด header
         df = pd.read_excel(uploaded_file, sheet_name=0, header=None)
         
-        # --- START DEBUGGING CODE ---
-        # This section will display the raw data as seen by Pandas.
-        st.warning("โหมดดีบัก: กำลังแสดงข้อมูล 15 แถวแรกที่อ่านได้จากไฟล์เป้าหมาย")
-        st.info("ข้อมูลที่แสดงด้านล่างนี้ คือสิ่งที่โปรแกรมอ่านได้จากไฟล์ Excel ของคุณ กรุณาจับภาพหน้าจอนี้ส่งเพื่อการวิเคราะห์ต่อไป")
-        st.dataframe(df.head(15))
-        # --- END DEBUGGING CODE ---
+        st.write("🔍 **ข้อมูลในไฟล์ Excel:**")
+        st.dataframe(df.head(10))
         
-        header_row_idx = -1
-        header_col_idx = -1
+        # ตรวจสอบโครงสร้างไฟล์
+        if len(df) < 3:
+            st.error("❌ ไฟล์มีข้อมูลไม่เพียงพอ ต้องมีอย่างน้อย 3 แถว")
+            return None
         
-        # Search for the header row by finding the cell containing 'Category' (case-insensitive)
-        for i, row in df.iterrows():
-            for j in range(min(5, len(row))):
-                cell_value = str(row.iloc[j]).strip().lower()
-                if cell_value == 'category':
-                    header_row_idx = i
-                    header_col_idx = j
+        # หาตำแหน่งของคอลัมน์ May และ W1
+        may_col_idx = None
+        w1_col_idx = None
+        
+        # ค้นหาในแถวที่ 1 และ 2
+        for row_idx in range(min(3, len(df))):
+            for col_idx in range(len(df.columns)):
+                cell_value = str(df.iloc[row_idx, col_idx]).strip().lower()
+                if 'may' in cell_value:
+                    may_col_idx = col_idx
+                    st.success(f"✅ พบคอลัมน์ 'May' ที่ตำแหน่ง ({row_idx+1}, {col_idx+1})")
+                elif 'w1' in cell_value:
+                    w1_col_idx = col_idx
+                    st.success(f"✅ พบคอลัมน์ 'W1' ที่ตำแหน่ง ({row_idx+1}, {col_idx+1})")
+        
+        # หากไม่พบคอลัมน์ ให้ใช้ค่าเริ่มต้น
+        if may_col_idx is None:
+            may_col_idx = 1  # คอลัมน์ที่ 2 (index 1)
+            st.warning(f"⚠️ ไม่พบคอลัมน์ 'May' ใช้ค่าเริ่มต้นคอลัมน์ที่ 2")
+        
+        if w1_col_idx is None:
+            w1_col_idx = 2  # คอลัมน์ที่ 3 (index 2)
+            st.warning(f"⚠️ ไม่พบคอลัมน์ 'W1' ใช้ค่าเริ่มต้นคอลัมน์ที่ 3")
+        
+        # หาแถวเริ่มต้นข้อมูล (ข้าม header)
+        start_row_idx = 2  # เริ่มจากแถวที่ 3 (index 2)
+        
+        # หาแถวสิ้นสุด (Total)
+        end_row_idx = len(df)
+        for i in range(start_row_idx, len(df)):
+            if i < len(df):
+                cell_value = str(df.iloc[i, 0]).strip().lower()
+                if 'total' in cell_value or 'รวม' in cell_value:
+                    end_row_idx = i
+                    st.info(f"📍 พบแถว 'Total' ที่แถวที่ {i+1}")
                     break
-            if header_row_idx != -1:
-                break
         
-        if header_row_idx == -1:
-            st.error("ไม่พบแถวหัวข้อ 'Category' ในไฟล์เป้าหมาย กรุณาตรวจสอบไฟล์")
+        # แยกข้อมูล category
+        category_data = []
+        for i in range(start_row_idx, end_row_idx):
+            if i < len(df):
+                category_name = df.iloc[i, 0]
+                may_value = df.iloc[i, may_col_idx] if may_col_idx < len(df.columns) else 0
+                w1_value = df.iloc[i, w1_col_idx] if w1_col_idx < len(df.columns) else 0
+                
+                # ทำความสะอาดข้อมูล
+                if pd.notna(category_name) and str(category_name).strip() != '':
+                    # แปลงค่าเป็นตัวเลข
+                    try:
+                        may_value = float(str(may_value).strip()) if pd.notna(may_value) else 0
+                    except:
+                        may_value = 0
+                    
+                    try:
+                        w1_value = float(str(w1_value).strip()) if pd.notna(w1_value) else 0
+                    except:
+                        w1_value = 0
+                    
+                    category_data.append({
+                        'Category': str(category_name).strip(),
+                        'MayTarget': may_value,
+                        'W1Target': w1_value
+                    })
+        
+        # แสดงข้อมูลที่แยกได้
+        if category_data:
+            st.write(f"📋 **ข้อมูลที่แยกได้ ({len(category_data)} categories):**")
+            preview_df = pd.DataFrame(category_data)
+            st.dataframe(preview_df)
+            
+            # แปลงเป็น dictionary format ที่โปรแกรมต้องการ
+            category_targets = {}
+            for item in category_data:
+                category_targets[item['Category']] = {
+                    'mayTarget': item['MayTarget'],
+                    'w1Target': item['W1Target']
+                }
+            
+            st.success(f"✅ ประมวลผลสำเร็จ! พบ {len(category_targets)} categories")
+            return category_targets
+        else:
+            st.error("❌ ไม่พบข้อมูล category ในไฟล์")
             return None
             
-        start_row_idx = header_row_idx + 1
-        end_row_idx = len(df)
-
-        # Find the end row by searching for 'Total' in the same column as 'Category'
-        for i in range(start_row_idx, len(df)):
-            if str(df.iloc[i, header_col_idx]).strip().lower() == 'total':
-                end_row_idx = i
-                break
-        
-        # Define the columns to extract based on the found header column
-        category_col = header_col_idx
-        may_target_col = header_col_idx + 1
-        w1_target_col = header_col_idx + 2
-
-        target_data_df = df.iloc[start_row_idx:end_row_idx, [category_col, may_target_col, w1_target_col]]
-        target_data_df.columns = ['Category', 'MayTarget', 'W1Target']
-
-        target_data_df['MayTarget'] = pd.to_numeric(target_data_df['MayTarget'], errors='coerce').fillna(0)
-        target_data_df['W1Target'] = pd.to_numeric(target_data_df['W1Target'], errors='coerce').fillna(0)
-        
-        category_targets = {}
-        for _, row in target_data_df.iterrows():
-            if pd.notna(row['Category']) and row['Category'].strip() != '':
-                category_targets[row['Category']] = {
-                    'mayTarget': row['MayTarget'],
-                    'w1Target': row['W1Target']
-                }
-        return category_targets
     except Exception as e:
         st.error(f"เกิดข้อผิดพลาดในการประมวลผลไฟล์เป้าหมาย: {e}")
+        import traceback
+        st.error(f"รายละเอียด: {traceback.format_exc()}")
         return None
 
 
@@ -94,32 +139,39 @@ def map_categories_to_historical_brands(category_targets):
     brand_mapping = {}
     brand_targets_agg = {}
 
+    st.write("🔄 **การจับคู่ Categories กับ Brands:**")
+    
     for category, targets in category_targets.items():
         matching_brand = None
         cat_lower = str(category).lower()
 
+        # การจับคู่ที่ปรับปรุงให้เหมาะกับไฟล์ BNI Sales Rolling
         if 'scg' in cat_lower:
             if 'pipe' in cat_lower or 'conduit' in cat_lower:
                 matching_brand = 'SCG-PI'
             elif 'fitting' in cat_lower:
                 matching_brand = 'SCG-FT'
-            elif 'ball valve' in cat_lower:
+            elif 'ball valve' in cat_lower or 'valve' in cat_lower:
                 matching_brand = 'SCG-BV'
         elif 'mizu' in cat_lower:
-            if 'pipe' in cat_lower or 'conduit' in cat_lower or 'c 5/8' in cat_lower:
+            if 'pipe' in cat_lower or 'conduit' in cat_lower or 'c 5/8' in cat_lower or 'yellow' in cat_lower or 'grey' in cat_lower:
                 matching_brand = 'MIZU-PI'
             elif 'fitting' in cat_lower:
                 matching_brand = 'MIZU-FT'
         elif any(keyword in cat_lower for keyword in ['icon', 'micon', 'scala']):
             matching_brand = 'ICON-PI'
-        elif 'fitting (trading)' in cat_lower:
+        elif 'fitting (trading)' in cat_lower or 'fitting' in cat_lower and 'trading' in cat_lower:
             matching_brand = 'SCG-FT'
-        elif 'ball valve (trading)' in cat_lower:
+        elif 'ball valve (trading)' in cat_lower or ('valve' in cat_lower and 'trading' in cat_lower):
             matching_brand = 'SCG-BV'
         elif 'solvent' in cat_lower or 'glue' in cat_lower:
-            matching_brand = '-'
+            matching_brand = 'SOLVENT'  # เปลี่ยนจาก '-' เป็น 'SOLVENT' เพื่อให้ติดตาม
+        else:
+            # หากไม่ตรงกับเงื่อนไขใดๆ ให้สร้าง brand ใหม่จากชื่อ category
+            matching_brand = category.replace(' ', '-').replace('(', '').replace(')', '').upper()
 
         brand_mapping[category] = matching_brand
+        st.write(f"   • {category} → {matching_brand}")
 
         if matching_brand and matching_brand != '-':
             if matching_brand not in brand_targets_agg:
@@ -131,6 +183,20 @@ def map_categories_to_historical_brands(category_targets):
             brand_targets_agg[matching_brand]['mayTarget'] += targets['mayTarget']
             brand_targets_agg[matching_brand]['w1Target'] += targets['w1Target']
             brand_targets_agg[matching_brand]['categories'].append(category)
+    
+    # แสดงผลสรุป
+    if brand_targets_agg:
+        st.write("📊 **สรุปเป้าหมายตาม Brand:**")
+        summary_data = []
+        for brand, targets in brand_targets_agg.items():
+            summary_data.append({
+                'Brand': brand,
+                'May Target': targets['mayTarget'],
+                'W1 Target': targets['w1Target'],
+                'Categories Count': len(targets['categories'])
+            })
+        summary_df = pd.DataFrame(summary_data)
+        st.dataframe(summary_df)
             
     return brand_mapping, brand_targets_agg
 
@@ -265,7 +331,7 @@ with tab1:
 
     with col2:
         st.subheader("2. อัปโหลดข้อมูลเป้าหมาย (Target Data)")
-        st.markdown("อัปโหลดไฟล์ BNI Sales Rolling ของคุณพร้อมเป้าหมายระดับแบรนด์ (หรือ Category ที่จะถูก map ไปยัง Brand)")
+        st.markdown("อัปโหลดไฟล์ **BNI Sales Rolling** ที่มีโครงสร้าง: แถวแรกมี headers (May, W1), แถวต่อไปเป็นข้อมูล categories พร้อมค่าเป้าหมาย")
         target_file_upload = st.file_uploader("เลือกไฟล์ Excel ข้อมูลเป้าหมาย", type=['xlsx', 'xls'], key="target_uploader")
         if target_file_upload:
             st.session_state.category_targets = process_target_file(target_file_upload)
