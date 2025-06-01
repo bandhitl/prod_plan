@@ -9,9 +9,6 @@ import json
 # --- Configuration and Constants ---
 HISTORICAL_REQUIRED_COLS = ["BRANDPRODUCT", "Item Code", "TON", "Item Name"]
 
-# OpenAI API Key - ใส่ API Key ของคุณตรงนี้
-OPENAI_API_KEY = "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"  # เปลี่ยนเป็น API Key จริงของคุณ
-
 # --- Embedded Historical Data ---
 def get_embedded_historical_data():
     """Returns embedded historical data based on the uploaded file analysis"""
@@ -146,8 +143,9 @@ def setup_openai_api():
 def generate_insight_analysis(brand_targets_agg, predictions, selected_brand=None):
     """Generate AI-powered insights using OpenAI"""
     
-    if not setup_openai_api():
-        st.error("❌ กรุณาใส่ OpenAI API Key ก่อน")
+    has_api_key, source = setup_openai_api()
+    if not has_api_key:
+        st.error("❌ ไม่พบ OpenAI API Key กรุณาตั้งค่าใน Streamlit Secrets หรือป้อนด้วยตนเอง")
         return None
     
     try:
@@ -234,34 +232,70 @@ def display_insights_section(brand_targets_agg, predictions, selected_brand):
     
     st.subheader("🤖 AI Insights Analysis")
     
-    # ตรวจสอบว่ามี API Key ฝังไว้ในโค้ดหรือไม่
-    has_hardcoded_key = OPENAI_API_KEY and OPENAI_API_KEY != "sk-YOUR-API-KEY-HERE"
+    # ตรวจสอบ API Key
+    has_api_key, source = setup_openai_api()
     
-    if has_hardcoded_key:
-        # ถ้ามี API Key ฝังไว้แล้ว แสดงเฉพาะปุ่มวิเคราะห์
+    if has_api_key and source == "environment":
+        # ถ้ามี API Key ใน Environment Variables (Render)
+        st.success("✅ OpenAI API Key พร้อมใช้งาน (จาก Environment Variables)")
+        analyze_button = st.button("🔍 เริ่มวิเคราะห์ด้วย AI", type="primary", use_container_width=True)
+        
+    elif has_api_key and source == "secrets":
+        # ถ้ามี API Key ใน Streamlit Secrets
+        st.success("✅ OpenAI API Key พร้อมใช้งาน (จาก Streamlit Secrets)")
         analyze_button = st.button("🔍 เริ่มวิเคราะห์ด้วย AI", type="primary", use_container_width=True)
             
+    elif has_api_key and source == "user_input":
+        # ถ้ามี API Key จากผู้ใช้
+        st.info("🔑 กำลังใช้ API Key ที่ระบุไว้")
+        analyze_button = st.button("🔍 เริ่มวิเคราะห์ด้วย AI", type="primary", use_container_width=True)
+        
     else:
-        # ถ้าไม่มี API Key ฝังไว้ ให้ผู้ใช้ใส่
+        # ไม่มี API Key
         st.warning("⚠️ ต้องการ OpenAI API Key เพื่อใช้งานฟีเจอร์นี้")
         
-        if 'openai_api_key' not in st.session_state:
-            st.session_state.openai_api_key = ""
-        
-        with st.expander("🔑 ตั้งค่า API Key", expanded=False):
+        # แสดงวิธีการตั้งค่า
+        with st.expander("🔧 วิธีการตั้งค่า API Key", expanded=True):
+            st.markdown("""
+            **🚀 วิธีที่ 1: Render Environment Variables (แนะนำสำหรับ Render)**
+            
+            1. ใน Render Dashboard → ไปที่ Service ของคุณ
+            2. คลิก **Environment** tab
+            3. เพิ่ม Environment Variable:
+               - **Key**: `OPENAI_API_KEY`
+               - **Value**: `sk-proj-your-api-key-here`
+            4. คลิก **Save Changes** (Render จะ redeploy อัตโนมัติ)
+            
+            **🔒 วิธีที่ 2: Streamlit Secrets (สำหรับ Local)**
+            
+            1. สร้างไฟล์ `.streamlit/secrets.toml` ในโฟลเดอร์โปรเจค
+            2. เพิ่มข้อมูลนี้ในไฟล์:
+            ```toml
+            OPENAI_API_KEY = "sk-proj-your-api-key-here"
+            ```
+            3. Restart แอป Streamlit
+            """)
+            
+            st.markdown("---")
+            st.markdown("**🔑 วิธีที่ 3: ป้อนแบบชั่วคราว**")
+            
+            if 'openai_api_key' not in st.session_state:
+                st.session_state.openai_api_key = ""
+            
             api_key = st.text_input(
-                "OpenAI API Key:",
+                "OpenAI API Key (ชั่วคราว):",
                 value=st.session_state.openai_api_key,
                 type="password",
-                help="ใส่ OpenAI API Key เพื่อใช้งาน AI Analysis"
+                help="API Key นี้จะไม่ถูกเก็บไว้ถาวร"
             )
             st.session_state.openai_api_key = api_key
             
         analyze_button = st.button("🔍 เริ่มวิเคราะห์ด้วย AI", type="primary", use_container_width=True)
     
     if analyze_button:
-        if not has_hardcoded_key and not st.session_state.get('openai_api_key'):
-            st.error("❌ กรุณาใส่ OpenAI API Key ในส่วนตั้งค่าก่อน")
+        has_api_key, source = setup_openai_api()
+        if not has_api_key:
+            st.error("❌ กรุณาตั้งค่า OpenAI API Key ก่อน")
         else:
             with st.spinner("🤖 AI กำลังวิเคราะห์ข้อมูลเชิงลึก..."):
                 insights = generate_insight_analysis(brand_targets_agg, predictions, selected_brand)
