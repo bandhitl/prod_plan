@@ -2,4 +2,4 @@ streamlit
 pandas
 plotly
 openpyxl
-openai
+openai>=1.0.0
