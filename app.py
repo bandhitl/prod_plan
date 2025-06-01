@@ -5,60 +5,55 @@ import plotly.express as px
 
 # --- Configuration and Constants ---
 HISTORICAL_REQUIRED_COLS = ["BRANDPRODUCT", "Item Code", "TON", "Item Name"]
-TARGET_CATEGORY_COL = 0  # Column index for Category name in target file
-TARGET_MAY_COL = 1       # Column index for May Target
-TARGET_W1_COL = 2        # Column index for W1 Target
+TARGET_CATEGORY_COL = 0
+TARGET_MAY_COL = 1
+TARGET_W1_COL = 2
 
 # --- Helper Functions for Data Processing ---
 
 def process_historical_file(uploaded_file):
     """Processes the uploaded historical data Excel file."""
     try:
-        # The JS code suggests headers are in row 2 (index 1 of rawData)
-        # and data starts from the next row.
-        # pandas header is 0-indexed, so if excel row 2 is header, header=1
-        df = pd.read_excel(uploaded_file, header=1) # Assuming headers are on the second row (index 1)
-
-        # Validate required columns
+        df = pd.read_excel(uploaded_file, header=1)
         missing_cols = [col for col in HISTORICAL_REQUIRED_COLS if col not in df.columns]
         if missing_cols:
             st.error(f"ไฟล์ข้อมูลย้อนหลังขาดคอลัมน์ที่จำเป็น: {', '.join(missing_cols)}")
             return None
-        
-        # Ensure TON is numeric
         df['TON'] = pd.to_numeric(df['TON'], errors='coerce')
         df.dropna(subset=['TON'], inplace=True)
-        
         return df
     except Exception as e:
         st.error(f"เกิดข้อผิดพลาดในการประมวลผลไฟล์ข้อมูลย้อนหลัง: {e}")
         return None
 
 def process_target_file(uploaded_file):
-    """Processes the uploaded target data Excel file."""
+    """
+    Processes the uploaded target data Excel file.
+    This version is more flexible and searches for the 'Category' header row.
+    """
     try:
-        # The JS code reads the first sheet and processes rows 2 until "Total"
-        # header=None because we are identifying columns by index and specific rows
         df = pd.read_excel(uploaded_file, sheet_name=0, header=None)
         
-        # Find the start row (index 2 in JS, so row 3 in Excel, index 2 for pandas iloc)
-        # and end row (before "Total")
-        start_row_idx = -1
+        header_row_idx = -1
+        # Find the row index where the header 'Category' is located
+        for i, row in df.iterrows():
+            if str(row.iloc[TARGET_CATEGORY_COL]).strip() == 'Category':
+                header_row_idx = i
+                break
+        
+        if header_row_idx == -1:
+            st.error("ไม่พบแถวหัวข้อ 'Category' ในไฟล์เป้าหมาย กรุณาตรวจสอบไฟล์")
+            return None
+            
+        start_row_idx = header_row_idx + 1
         end_row_idx = len(df)
 
-        for i in range(len(df)):
-            if start_row_idx == -1 and i >= 2: # Data starts from 3rd row (index 2)
-                 # Check if the first cell looks like a category name (not empty)
-                if pd.notna(df.iloc[i, TARGET_CATEGORY_COL]):
-                    start_row_idx = i
-            if df.iloc[i, TARGET_CATEGORY_COL] == 'Total':
+        # Find the end row (before "Total")
+        for i in range(start_row_idx, len(df)):
+            if str(df.iloc[i, TARGET_CATEGORY_COL]).strip() == 'Total':
                 end_row_idx = i
                 break
         
-        if start_row_idx == -1:
-            st.error("ไม่พบข้อมูลเป้าหมายที่ถูกต้องในไฟล์ (ตรวจสอบว่าข้อมูลเริ่มที่แถวที่ 3 และมีคอลัมน์ Category)")
-            return None
-
         target_data_df = df.iloc[start_row_idx:end_row_idx, [TARGET_CATEGORY_COL, TARGET_MAY_COL, TARGET_W1_COL]]
         target_data_df.columns = ['Category', 'MayTarget', 'W1Target']
 
@@ -67,14 +62,16 @@ def process_target_file(uploaded_file):
         
         category_targets = {}
         for _, row in target_data_df.iterrows():
-            category_targets[row['Category']] = {
-                'mayTarget': row['MayTarget'],
-                'w1Target': row['W1Target']
-            }
+            if pd.notna(row['Category']) and row['Category'].strip() != '':
+                category_targets[row['Category']] = {
+                    'mayTarget': row['MayTarget'],
+                    'w1Target': row['W1Target']
+                }
         return category_targets
     except Exception as e:
         st.error(f"เกิดข้อผิดพลาดในการประมวลผลไฟล์เป้าหมาย: {e}")
         return None
+
 
 def map_categories_to_historical_brands(category_targets):
     """Maps BNI categories to historical brands and aggregates targets."""
@@ -219,7 +216,7 @@ def generate_excel_download(predictions_data, selected_period_key):
         final_df = pd.concat(all_data_frames, ignore_index=True)
         final_df.to_excel(writer, index=False, sheet_name=f"Production Plan - {'May' if selected_period_key == 'may' else 'W1'}")
     
-    writer.close() # Corrected from writer.save() to writer.close() for ExcelWriter
+    writer.close()
     processed_data = output.getvalue()
     return processed_data
 
@@ -273,14 +270,13 @@ with tab1:
             st.session_state.category_targets = process_target_file(target_file_upload)
             if st.session_state.category_targets:
                 st.success(f"ไฟล์ข้อมูลเป้าหมาย '{target_file_upload.name}' โหลดสำเร็จแล้ว มี {len(st.session_state.category_targets)} categories")
-                # Perform mapping immediately after target upload if historical data is also present
                 if st.session_state.historical_df is not None:
                     _, st.session_state.brand_targets_agg = map_categories_to_historical_brands(st.session_state.category_targets)
 
 
     if st.button("สร้างการกระจาย SKU (Generate SKU Distribution)", disabled=not (st.session_state.historical_df is not None and st.session_state.category_targets is not None)):
         with st.spinner("กำลังประมวลผลและสร้างการคาดการณ์..."):
-            if st.session_state.brand_targets_agg is None: # Recalculate if not done
+            if st.session_state.brand_targets_agg is None: 
                  _, st.session_state.brand_targets_agg = map_categories_to_historical_brands(st.session_state.category_targets)
 
             if st.session_state.brand_targets_agg:
@@ -289,7 +285,6 @@ with tab1:
                     st.session_state.historical_df
                 )
                 st.success("การสร้างการกระจาย SKU เสร็จสมบูรณ์! กรุณาไปที่แท็บ 'Analysis' หรือ 'Results'")
-                # Automatically set the first brand for selection if predictions are available
                 if st.session_state.predictions:
                     first_brand = next(iter(st.session_state.predictions), None)
                     st.session_state.selected_brand_analysis = first_brand
@@ -303,7 +298,6 @@ with tab2:
     if not st.session_state.predictions:
         st.info("กรุณาอัปโหลดข้อมูลและสร้างการกระจาย SKU ในแท็บ 'Upload Data' ก่อน")
     else:
-        # Period Selector
         period_options = {'may': 'May', 'w1': 'Week 1'}
         st.session_state.selected_period = st.radio(
             "เลือกช่วงเวลา (Select Period):",
@@ -318,7 +312,7 @@ with tab2:
             brand_target_data = []
             target_key = 'mayTarget' if st.session_state.selected_period == 'may' else 'w1Target'
             for brand, targets in st.session_state.brand_targets_agg.items():
-                if targets[target_key] > 0 : # Only show brands with target > 0 for the period
+                if targets[target_key] > 0 :
                     brand_target_data.append({'Brand': brand, 'Tonnage': targets[target_key]})
             
             if brand_target_data:
@@ -336,7 +330,6 @@ with tab2:
         if not brand_list:
             st.warning("ไม่มีข้อมูลการคาดการณ์สำหรับแบรนด์ใดๆ")
         else:
-            # Ensure selected_brand_analysis is valid
             if st.session_state.selected_brand_analysis not in brand_list:
                  st.session_state.selected_brand_analysis = brand_list[0] if brand_list else None
 
@@ -364,7 +357,6 @@ with tab2:
                         df_sku_dist.rename(columns={'index': 'SKU', 'itemName': 'Product Name', 'tonnage': 'Tonnage'}, inplace=True)
                         df_sku_dist = df_sku_dist.sort_values(by='Tonnage', ascending=False)
 
-                        # SKU Bar Chart
                         display_df_sku = df_sku_dist if st.session_state.show_all_skus else df_sku_dist.head(10)
                         if not display_df_sku.empty:
                             fig_sku_bar = px.bar(display_df_sku, y='SKU', x='Tonnage', orientation='h',
@@ -374,13 +366,12 @@ with tab2:
                             fig_sku_bar.update_layout(yaxis={'categoryorder':'total ascending'})
                             st.plotly_chart(fig_sku_bar, use_container_width=True)
 
-                            # SKU Pie Chart (Top 5 + Others)
                             top_n_pie = 5
                             df_pie_data = df_sku_dist.head(top_n_pie).copy()
                             if len(df_sku_dist) > top_n_pie:
                                 others_tonnage = df_sku_dist.iloc[top_n_pie:]['Tonnage'].sum()
-                                if others_tonnage > 0.01 : # Only add 'Others' if significant
-                                    df_pie_data.loc[len(df_pie_data)] = ['Others', 'Other SKUs', others_tonnage, 0] # Percentage not needed for pie values
+                                if others_tonnage > 0.01 :
+                                    df_pie_data.loc[len(df_pie_data)] = ['Others', 'Other SKUs', others_tonnage, 0]
 
                             if not df_pie_data.empty:
                                 fig_sku_pie = px.pie(df_pie_data, values='Tonnage', names='SKU', 
@@ -399,21 +390,19 @@ with tab3:
     if not st.session_state.predictions:
         st.info("กรุณาอัปโหลดข้อมูลและสร้างการกระจาย SKU ในแท็บ 'Upload Data' ก่อน")
     else:
-        # Period Selector (can be linked or independent, here linked for consistency)
-        # Using the same st.session_state.selected_period as Analysis tab
+        period_options = {'may': 'May', 'w1': 'Week 1'}
         st.radio(
             "เลือกช่วงเวลา (Select Period):",
             options=list(period_options.keys()),
             format_func=lambda x: period_options[x],
             horizontal=True,
-            key="results_period_selector" # Use same key to link or different key for independence
+            key="results_period_selector"
         )
         
         brand_list_results = list(st.session_state.predictions.keys())
         if not brand_list_results:
             st.warning("ไม่มีข้อมูลการคาดการณ์สำหรับแบรนด์ใดๆ")
         else:
-            # Ensure selected_brand_results is valid
             if st.session_state.selected_brand_results not in brand_list_results:
                  st.session_state.selected_brand_results = brand_list_results[0] if brand_list_results else None
 
@@ -444,7 +433,6 @@ with tab3:
                 else:
                     st.warning(f"ไม่พบข้อมูลสำหรับแบรนด์ {st.session_state.selected_brand_results}")
         
-        # Download Button
         if st.session_state.predictions:
             excel_bytes = generate_excel_download(st.session_state.predictions, st.session_state.selected_period)
             st.download_button(
