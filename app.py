@@ -1,568 +1,268 @@
-# Production Planning Application - Complete Fixed Version
+# Enhanced Production Planning AI Analysis - Replace functions in main app
+
 import streamlit as st
 import pandas as pd
-import io
 import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import json
 import numpy as np
+from datetime import datetime, timedelta
 
-# Try to import openai, handle if not installed
-try:
-    import openai
-    OPENAI_AVAILABLE = True
-except ImportError:
-    OPENAI_AVAILABLE = False
-    openai = None
-
-# Configuration
-HISTORICAL_REQUIRED_COLS = ["BRANDPRODUCT", "Item Code", "TON", "Item Name"]
-
-# Get API key from environment
-OPENAI_API_KEY = None
-try:
-    import os
-    OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-    if not OPENAI_API_KEY:
-        try:
-            OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY")
-        except:
-            pass
-except:
-    pass
-
-def process_historical_file(uploaded_file):
-    """Process uploaded historical data Excel file"""
-    try:
-        # Try different header positions
-        header_positions = [0, 1, 2]
-        df = None
-        
-        for header_pos in header_positions:
-            try:
-                temp_df = pd.read_excel(uploaded_file, header=header_pos)
-                cols_found = sum(1 for col in HISTORICAL_REQUIRED_COLS 
-                               if any(req_col.upper() in str(temp_col).upper() 
-                                     for temp_col in temp_df.columns 
-                                     for req_col in [col]))
-                
-                if cols_found >= 3:
-                    df = temp_df
-                    st.success(f"✅ Found valid headers at row {header_pos + 1}")
-                    break
-            except:
-                continue
-        
-        if df is None:
-            st.error("❌ Could not find valid headers in the file")
-            return None
-        
-        # Map columns
-        column_mapping = {}
-        for req_col in HISTORICAL_REQUIRED_COLS:
-            for df_col in df.columns:
-                if req_col.upper() in str(df_col).upper():
-                    column_mapping[df_col] = req_col
-                    break
-        
-        df = df.rename(columns=column_mapping)
-        
-        # Check required columns
-        missing_cols = [col for col in HISTORICAL_REQUIRED_COLS if col not in df.columns]
-        if missing_cols:
-            st.error(f"Missing required columns: {', '.join(missing_cols)}")
-            return None
-        
-        # Clean data with proper type conversion
-        original_count = len(df)
-        df['TON'] = pd.to_numeric(df['TON'], errors='coerce')
-        df = df.dropna(subset=['TON'])
-        df = df[df['TON'] > 0]
-        df = df.dropna(subset=['BRANDPRODUCT', 'Item Code'])
-        
-        # Ensure string columns are properly converted
-        df['BRANDPRODUCT'] = df['BRANDPRODUCT'].astype(str).str.strip()
-        df['Item Code'] = df['Item Code'].astype(str).str.strip()
-        df['Item Name'] = df['Item Name'].astype(str).str.strip()
-        
-        # Remove empty strings
-        df = df[df['BRANDPRODUCT'] != '']
-        df = df[df['Item Code'] != '']
-        
-        st.write(f"📊 **Data Summary:** {len(df):,} valid records from {original_count:,} total rows")
-        
-        # Brand summary
-        brand_summary = df.groupby('BRANDPRODUCT').agg({
-            'Item Code': 'nunique',
-            'TON': ['count', 'sum']
-        }).round(2)
-        brand_summary.columns = ['Unique SKUs', 'Records', 'Total TON']
-        brand_summary = brand_summary.sort_values('Total TON', ascending=False)
-        
-        st.dataframe(brand_summary, use_container_width=True)
-        return df
-        
-    except Exception as e:
-        st.error(f"Error processing historical file: {e}")
-        return None
-
-def process_target_file(uploaded_file):
-    """Process BNI Sales Rolling target file"""
-    try:
-        df = pd.read_excel(uploaded_file, sheet_name=0, header=None)
-        
-        st.write("🔍 **Target File Preview:**")
-        st.dataframe(df.head(10))
-        
-        if len(df) < 3:
-            st.error("❌ File has insufficient data")
-            return None
-        
-        # Find May and W1 columns
-        may_col_idx = None
-        w1_col_idx = None
-        
-        for row_idx in range(min(3, len(df))):
-            for col_idx in range(len(df.columns)):
-                cell_value = str(df.iloc[row_idx, col_idx]).strip().lower()
-                if 'may' in cell_value and may_col_idx is None:
-                    may_col_idx = col_idx
-                elif 'w1' in cell_value and w1_col_idx is None:
-                    w1_col_idx = col_idx
-        
-        if may_col_idx is None:
-            may_col_idx = 1
-        if w1_col_idx is None:
-            w1_col_idx = 2
-        
-        # Find data range
-        start_row_idx = 2
-        end_row_idx = len(df)
-        
-        for i in range(start_row_idx, len(df)):
-            if i < len(df):
-                cell_value = str(df.iloc[i, 0]).strip().lower()
-                if 'total' in cell_value:
-                    end_row_idx = i
-                    break
-        
-        # Extract categories
-        category_data = []
-        for i in range(start_row_idx, end_row_idx):
-            if i < len(df):
-                category_name = df.iloc[i, 0]
-                may_value = df.iloc[i, may_col_idx] if may_col_idx < len(df.columns) else 0
-                w1_value = df.iloc[i, w1_col_idx] if w1_col_idx < len(df.columns) else 0
-                
-                if pd.notna(category_name) and str(category_name).strip() != '':
-                    try:
-                        may_value = float(str(may_value).strip()) if pd.notna(may_value) else 0
-                    except:
-                        may_value = 0
-                    
-                    try:
-                        w1_value = float(str(w1_value).strip()) if pd.notna(w1_value) else 0
-                    except:
-                        w1_value = 0
-                    
-                    category_data.append({
-                        'Category': str(category_name).strip(),
-                        'MayTarget': may_value,
-                        'W1Target': w1_value
-                    })
-        
-        if category_data:
-            st.write(f"📋 **Extracted {len(category_data)} categories**")
-            
-            category_targets = {}
-            for item in category_data:
-                category_targets[item['Category']] = {
-                    'mayTarget': item['MayTarget'],
-                    'w1Target': item['W1Target']
-                }
-            
-            return category_targets
-        else:
-            st.error("❌ No category data found")
-            return None
-            
-    except Exception as e:
-        st.error(f"Error processing target file: {e}")
-        return None
-
-def filter_historical_by_month(historical_df, target_month="May"):
-    """Filter historical data by month for proper comparison"""
-    if historical_df is None or historical_df.empty:
-        return historical_df
+def calculate_production_metrics(brand_targets_agg, predictions):
+    """Calculate comprehensive production planning metrics"""
     
-    # Look for date columns
-    date_columns = []
-    for col in historical_df.columns:
-        if any(date_word in str(col).lower() for date_word in ['date', 'time', 'month', 'period']):
-            date_columns.append(col)
-    
-    # If we find date columns, try to filter by month
-    if date_columns:
-        for date_col in date_columns:
-            try:
-                # Convert to datetime
-                historical_df[date_col] = pd.to_datetime(historical_df[date_col], errors='coerce')
-                
-                # Filter by month name
-                month_number = {
-                    'january': 1, 'february': 2, 'march': 3, 'april': 4,
-                    'may': 5, 'june': 6, 'july': 7, 'august': 8,
-                    'september': 9, 'october': 10, 'november': 11, 'december': 12
-                }.get(target_month.lower(), 5)  # Default to May
-                
-                filtered_df = historical_df[historical_df[date_col].dt.month == month_number]
-                
-                if len(filtered_df) > 0:
-                    st.info(f"📅 Filtered historical data to {target_month} only: {len(filtered_df):,} records")
-                    return filtered_df
-            except:
-                continue
-    
-    # If no date filtering possible, return original data
-    st.info("📅 Using all historical data (no date filtering applied)")
-    return historical_df
-
-def map_categories_to_brands(category_targets, historical_df):
-    """Map categories to brands with optimized processing"""
-    historical_summary = {}
-    if historical_df is not None and not historical_df.empty:
-        try:
-            hist_summary = historical_df.groupby('BRANDPRODUCT')['TON'].sum()
-            historical_summary = hist_summary.to_dict()
-        except Exception as e:
-            historical_summary = {}
-    
-    brand_targets_agg = {}
-    processed_count = 0
-    skipped_count = 0
-    
-    for category, targets in category_targets.items():
-        cat_lower = str(category).lower().strip()
-        
-        if 'mfg' not in cat_lower:
-            skipped_count += 1
-            continue
-        
-        # Determine brand
-        if 'scg' in cat_lower:
-            if 'pipe' in cat_lower or 'conduit' in cat_lower:
-                matching_brand = 'SCG-PI'
-            elif 'fitting' in cat_lower:
-                matching_brand = 'SCG-FT'
-            elif 'valve' in cat_lower:
-                matching_brand = 'SCG-BV'
-            else:
-                matching_brand = 'SCG-PI'
-        elif 'mizu' in cat_lower:
-            if 'fitting' in cat_lower:
-                matching_brand = 'MIZU-FT'
-            else:
-                matching_brand = 'MIZU-PI'
-        elif 'icon' in cat_lower or 'micon' in cat_lower:
-            matching_brand = 'ICON-PI'
-        elif 'pipe' in cat_lower:
-            matching_brand = 'SCG-PI'
-        elif 'fitting' in cat_lower:
-            matching_brand = 'SCG-FT'
-        elif 'valve' in cat_lower:
-            matching_brand = 'SCG-BV'
-        else:
-            matching_brand = category.replace(' ', '-').upper()
-
-        historical_tonnage = historical_summary.get(matching_brand, 0)
-        
-        if matching_brand not in brand_targets_agg:
-            brand_targets_agg[matching_brand] = {
-                'mayTarget': 0,
-                'w1Target': 0,
-                'categories': [],
-                'historicalTonnage': historical_tonnage
-            }
-        
-        may_target = targets.get('mayTarget', 0)
-        w1_target = targets.get('w1Target', 0)
-        
-        brand_targets_agg[matching_brand]['mayTarget'] += may_target
-        brand_targets_agg[matching_brand]['w1Target'] += w1_target
-        brand_targets_agg[matching_brand]['categories'].append(category)
-        
-        processed_count += 1
-    
-    if processed_count > 0:
-        st.success(f"✅ Processed {processed_count} MFG categories")
-    
-    if skipped_count > 0:
-        st.info(f"⏭️ Skipped {skipped_count} Trading categories")
-    
-    if brand_targets_agg:
-        summary_data = []
-        for brand, targets in brand_targets_agg.items():
-            historical_tonnage = targets['historicalTonnage']
-            may_ratio = targets['mayTarget'] / historical_tonnage if historical_tonnage > 0 else 0
-            
-            summary_data.append({
-                'Brand': brand,
-                'May Target': targets['mayTarget'],
-                'W1 Target': targets['w1Target'],
-                'Historical': historical_tonnage,
-                'Growth': f"{may_ratio:.1f}x" if historical_tonnage > 0 else "New",
-                'Categories': len(targets['categories'])
-            })
-        
-        summary_df = pd.DataFrame(summary_data)
-        st.dataframe(summary_df, use_container_width=True)
-    
-    return {}, brand_targets_agg
-
-def predict_sku_distribution(brand_targets_agg, historical_df):
-    """Predict SKU distribution"""
-    if historical_df is None or historical_df.empty:
-        st.error("Historical data not available for prediction")
-        return {}, {}
-
-    st.write("📈 **Generating SKU Distribution Predictions...**")
-    
-    brand_sku_tonnage = historical_df.groupby(['BRANDPRODUCT', 'Item Code', 'Item Name'])['TON'].sum().reset_index()
-    brand_total_tonnage = brand_sku_tonnage.groupby('BRANDPRODUCT')['TON'].sum().rename('TotalBrandTon').reset_index()
-    brand_sku_percentages = pd.merge(brand_sku_tonnage, brand_total_tonnage, on='BRANDPRODUCT')
-    brand_sku_percentages['Percentage'] = brand_sku_percentages['TON'] / brand_sku_percentages['TotalBrandTon']
-    
-    predictions = {}
+    production_metrics = []
     
     for brand, targets in brand_targets_agg.items():
-        current_brand_skus = brand_sku_percentages[brand_sku_percentages['BRANDPRODUCT'] == brand]
+        historical = targets.get('historicalTonnage', 0)
+        may_target = targets['mayTarget']
+        w1_target = targets['w1Target']
         
-        if len(current_brand_skus) == 0:
-            st.warning(f"⚠️ No historical data for {brand}")
-            continue
+        # Get SKU data
+        brand_pred = predictions.get(brand, {})
+        may_dist = brand_pred.get('mayDistribution', {})
+        sku_count = len(may_dist)
         
-        predictions[brand] = {
-            'mayTarget': targets['mayTarget'],
-            'w1Target': targets['w1Target'],
-            'historicalTonnage': targets.get('historicalTonnage', 0),
-            'categories': targets['categories'],
-            'mayDistribution': {},
-            'w1Distribution': {},
-            'skuCount': len(current_brand_skus)
-        }
+        # Calculate production metrics
+        capacity_utilization = min((may_target / 1000) * 100, 100) if may_target > 0 else 0  # Assuming 1000 tons max capacity
+        setup_complexity = min(sku_count / 10, 10)  # Complexity based on SKU count
         
-        for _, sku_row in current_brand_skus.iterrows():
-            sku_code = sku_row['Item Code']
-            percentage = sku_row['Percentage']
-            item_name = sku_row['Item Name']
-            historical_sku_tonnage = sku_row['TON']
-
-            if percentage >= 0.001:
-                predictions[brand]['mayDistribution'][sku_code] = {
-                    'tonnage': targets['mayTarget'] * percentage,
-                    'percentage': percentage,
-                    'itemName': item_name,
-                    'historicalTonnage': historical_sku_tonnage
-                }
-                predictions[brand]['w1Distribution'][sku_code] = {
-                    'tonnage': targets['w1Target'] * percentage,
-                    'percentage': percentage,
-                    'itemName': item_name,
-                    'historicalTonnage': historical_sku_tonnage
-                }
+        # Resource requirements
+        labor_hours = may_target * 8  # 8 hours per ton estimate
+        machine_hours = may_target * 6  # 6 machine hours per ton
+        
+        # Lead time calculation
+        base_lead_time = 7  # Base 7 days
+        complexity_factor = setup_complexity / 10
+        volume_factor = min(may_target / 500, 2)  # Volume impact
+        lead_time_days = base_lead_time * (1 + complexity_factor + volume_factor)
+        
+        # Quality risk assessment
+        growth_ratio = may_target / historical if historical > 0 else 5
+        quality_risk = "High" if growth_ratio > 3 else "Medium" if growth_ratio > 1.5 else "Low"
+        
+        # Cost estimates (simplified)
+        material_cost = may_target * 800  # $800 per ton
+        labor_cost = labor_hours * 25  # $25 per hour
+        overhead_cost = may_target * 200  # $200 per ton
+        total_cost = material_cost + labor_cost + overhead_cost
+        
+        production_metrics.append({
+            'brand': brand,
+            'may_target': may_target,
+            'historical': historical,
+            'sku_count': sku_count,
+            'capacity_utilization': round(capacity_utilization, 1),
+            'setup_complexity': round(setup_complexity, 1),
+            'labor_hours': round(labor_hours, 0),
+            'machine_hours': round(machine_hours, 0),
+            'lead_time_days': round(lead_time_days, 1),
+            'quality_risk': quality_risk,
+            'material_cost': round(material_cost, 0),
+            'labor_cost': round(labor_cost, 0),
+            'total_cost': round(total_cost, 0),
+            'cost_per_ton': round(total_cost / may_target if may_target > 0 else 0, 0),
+            'growth_ratio': round(growth_ratio, 2)
+        })
     
-    if predictions:
-        st.success(f"✅ Generated predictions for {len(predictions)} brands")
-        
-        # Show prediction summary
-        summary_data = []
-        for brand, pred in predictions.items():
-            historical_tonnage = pred.get('historicalTonnage', 0)
-            growth_may = pred['mayTarget'] / historical_tonnage if historical_tonnage > 0 else 0
-            
-            summary_data.append({
-                'Brand': brand,
-                'SKU Count': pred['skuCount'],
-                'May Target': pred['mayTarget'],
-                'Historical': historical_tonnage,
-                'Growth': f"{growth_may:.1f}x" if historical_tonnage > 0 else "N/A"
-            })
-        
-        summary_df = pd.DataFrame(summary_data)
-        st.dataframe(summary_df, use_container_width=True)
-    
-    return predictions, {}
+    return production_metrics
 
-def setup_openai_api():
-    """Setup OpenAI API key"""
-    if not OPENAI_AVAILABLE:
-        return False, "not_installed"
+def generate_production_schedule(brand_targets_agg, production_metrics):
+    """Generate production schedule recommendations"""
     
-    if OPENAI_API_KEY and OPENAI_API_KEY != "sk-YOUR-API-KEY-HERE":
-        return True, "environment"
-    else:
-        api_key = st.session_state.get('openai_api_key')
-        if api_key:
-            return True, "user_input"
+    schedule_data = []
+    start_date = datetime(2024, 5, 1)  # May 1st start
     
-    return False, "no_key"
+    # Sort by priority (risk level and volume)
+    sorted_metrics = sorted(production_metrics, 
+                          key=lambda x: (x['quality_risk'] == 'High', -x['may_target']), 
+                          reverse=True)
+    
+    current_date = start_date
+    
+    for metric in sorted_metrics:
+        brand = metric['brand']
+        lead_time = metric['lead_time_days']
+        target_tons = metric['may_target']
+        
+        # Calculate production phases
+        planning_phase = 2  # 2 days planning
+        setup_phase = max(2, metric['setup_complexity'] / 2)  # Setup time based on complexity
+        production_phase = max(3, target_tons / 50)  # 50 tons per day capacity
+        quality_phase = 1  # 1 day quality check
+        
+        total_duration = planning_phase + setup_phase + production_phase + quality_phase
+        
+        # Schedule phases
+        phases = [
+            {
+                'brand': brand,
+                'phase': 'Planning',
+                'start_date': current_date,
+                'end_date': current_date + timedelta(days=planning_phase),
+                'duration': planning_phase,
+                'resources': 'Planning Team',
+                'deliverable': 'Production Plan'
+            },
+            {
+                'brand': brand,
+                'phase': 'Setup',
+                'start_date': current_date + timedelta(days=planning_phase),
+                'end_date': current_date + timedelta(days=planning_phase + setup_phase),
+                'duration': setup_phase,
+                'resources': 'Setup Crew',
+                'deliverable': 'Machine Ready'
+            },
+            {
+                'brand': brand,
+                'phase': 'Production',
+                'start_date': current_date + timedelta(days=planning_phase + setup_phase),
+                'end_date': current_date + timedelta(days=planning_phase + setup_phase + production_phase),
+                'duration': production_phase,
+                'resources': 'Production Line',
+                'deliverable': f'{target_tons:.0f} tons'
+            },
+            {
+                'brand': brand,
+                'phase': 'Quality Control',
+                'start_date': current_date + timedelta(days=planning_phase + setup_phase + production_phase),
+                'end_date': current_date + timedelta(days=total_duration),
+                'duration': quality_phase,
+                'resources': 'QC Team',
+                'deliverable': 'Quality Approved'
+            }
+        ]
+        
+        schedule_data.extend(phases)
+        current_date += timedelta(days=total_duration + 1)  # Add buffer day
+    
+    return pd.DataFrame(schedule_data)
 
-def calculate_risk_score(may_target, historical, w1_target):
-    """Calculate risk score for brand (1-10 scale)"""
-    try:
-        if historical <= 0:
-            return 8  # High risk for new products
+def generate_resource_allocation(production_metrics):
+    """Generate resource allocation recommendations"""
+    
+    resource_data = []
+    
+    for metric in production_metrics:
+        brand = metric['brand']
         
-        growth_ratio = may_target / historical
+        # Labor allocation
+        operators_needed = max(2, metric['labor_hours'] / 160)  # 160 hours per month per operator
+        supervisors_needed = max(1, operators_needed / 10)
+        qc_staff_needed = max(1, metric['sku_count'] / 20)
         
-        risk_score = 1
+        # Machine allocation
+        production_lines = max(1, metric['may_target'] / 200)  # 200 tons per line capacity
+        support_equipment = production_lines * 2
         
-        # Growth-based risk
-        if growth_ratio > 5:
-            risk_score += 4
-        elif growth_ratio > 3:
-            risk_score += 3
-        elif growth_ratio > 2:
-            risk_score += 2
-        elif growth_ratio > 1.5:
-            risk_score += 1
+        # Material requirements
+        raw_material_tons = metric['may_target'] * 1.05  # 5% waste factor
+        packaging_units = metric['may_target'] * 40  # 40 packages per ton
         
-        # Volume-based risk
-        if may_target > 1000:
-            risk_score += 2
-        elif may_target > 500:
-            risk_score += 1
-        
-        return min(risk_score, 10)
-    except:
-        return 5  # Default medium risk
-
-def create_fallback_analysis(market_analysis, brand_metrics):
-    """Create fallback analysis if AI fails"""
-    return {
-        "executive_summary": {
-            "key_insights": [
-                f"Total production target: {market_analysis.get('total_capacity_requirement', 0)} tons",
-                f"Growth rate: {market_analysis.get('capacity_growth_vs_historical', 0)}%",
-                f"High risk brands: {market_analysis.get('high_risk_brands', 0)}"
-            ],
-            "overall_assessment": "Analysis completed with production planning recommendations",
-            "confidence_level": "Medium"
-        },
-        "market_outlook": {
-            "demand_forecast": "Market demand shows growth potential",
-            "market_conditions": "Current market conditions require careful capacity planning"
-        },
-        "operational_strategy": {
-            "production_optimization": [
-                "Focus on high-volume SKUs",
-                "Optimize production scheduling"
-            ],
-            "capacity_planning": "Scale capacity based on growth projections"
-        },
-        "risk_assessment": {
-            "high_risk_areas": [
-                "High growth rate targets",
-                "New product launches"
-            ],
-            "mitigation_strategies": [
-                "Gradual capacity scaling",
-                "Quality control enhancement"
-            ]
-        }
-    }
+        resource_data.append({
+            'brand': brand,
+            'target_tons': metric['may_target'],
+            'operators': round(operators_needed, 1),
+            'supervisors': round(supervisors_needed, 1),
+            'qc_staff': round(qc_staff_needed, 1),
+            'production_lines': round(production_lines, 1),
+            'support_equipment': round(support_equipment, 0),
+            'raw_material_tons': round(raw_material_tons, 1),
+            'packaging_units': round(packaging_units, 0),
+            'priority': 'High' if metric['quality_risk'] == 'High' else 'Medium' if metric['growth_ratio'] > 2 else 'Normal'
+        })
+    
+    return pd.DataFrame(resource_data)
 
 def generate_enhanced_insight_analysis(brand_targets_agg, predictions, selected_brand=None):
-    """Generate enhanced AI insights with structured analysis"""
+    """Generate enhanced production planning analysis"""
     
     has_api_key, source = setup_openai_api()
     if not has_api_key:
         return None, None, None, "No API key available"
     
     try:
-        # Get API key
-        api_key = OPENAI_API_KEY if OPENAI_API_KEY else st.session_state.get('openai_api_key')
+        # Calculate production metrics
+        production_metrics = calculate_production_metrics(brand_targets_agg, predictions)
         
-        if not api_key:
-            return None, None, None, "API Key not found"
+        # Generate schedule and resource allocation
+        schedule_df = generate_production_schedule(brand_targets_agg, production_metrics)
+        resource_df = generate_resource_allocation(production_metrics)
         
-        # Prepare analysis data
+        # Prepare comprehensive data for AI
         total_may_target = sum(targets['mayTarget'] for targets in brand_targets_agg.values())
         total_historical = sum(targets.get('historicalTonnage', 0) for targets in brand_targets_agg.values())
+        total_cost = sum(m['total_cost'] for m in production_metrics)
+        total_labor_hours = sum(m['labor_hours'] for m in production_metrics)
+        avg_lead_time = np.mean([m['lead_time_days'] for m in production_metrics])
         
-        # Brand metrics with error handling
-        brand_metrics = []
-        for brand, targets in brand_targets_agg.items():
-            try:
-                historical = targets.get('historicalTonnage', 0)
-                may_target = targets['mayTarget']
-                w1_target = targets['w1Target']
-                
-                growth_rate = ((may_target / historical) - 1) * 100 if historical > 0 else 0
-                market_share = (may_target / total_may_target * 100) if total_may_target > 0 else 0
-                risk_score = calculate_risk_score(may_target, historical, w1_target)
-                sku_count = len(predictions.get(brand, {}).get('mayDistribution', {}))
-                
-                brand_metrics.append({
-                    "brand": brand,
-                    "may_target": round(may_target, 2),
-                    "w1_target": round(w1_target, 2),
-                    "historical": round(historical, 2),
-                    "growth_rate": round(growth_rate, 1),
-                    "market_share": round(market_share, 1),
-                    "risk_score": risk_score,
-                    "sku_count": sku_count,
-                    "category_count": len(targets.get('categories', []))
-                })
-            except Exception as e:
-                st.warning(f"Error processing brand {brand}: {e}")
-                continue
-        
-        # Market analysis
-        market_analysis = {
-            "total_capacity_requirement": round(total_may_target, 2),
-            "total_historical": round(total_historical, 2),
-            "capacity_growth_vs_historical": round(((total_may_target / total_historical) - 1) * 100, 1) if total_historical > 0 else 0,
-            "high_risk_brands": len([b for b in brand_metrics if b["risk_score"] >= 7]),
-            "medium_risk_brands": len([b for b in brand_metrics if 4 <= b["risk_score"] < 7]),
-            "low_risk_brands": len([b for b in brand_metrics if b["risk_score"] < 4]),
-            "avg_growth_rate": round(np.mean([b["growth_rate"] for b in brand_metrics]) if brand_metrics else 0, 1),
-            "brand_count": len(brand_metrics)
-        }
-        
-        # Simplified AI prompt
+        # Enhanced AI prompt with production planning focus
         prompt = f"""
-        Analyze this production planning data and return ONLY a JSON object:
+        As a senior production planning manager, analyze this comprehensive production data and provide strategic recommendations.
         
-        Total May Target: {total_may_target:.1f} tons
-        Total Historical: {total_historical:.1f} tons
-        Growth Rate: {market_analysis['capacity_growth_vs_historical']:.1f}%
-        Brand Count: {len(brand_metrics)}
-        High Risk Brands: {market_analysis['high_risk_brands']}
+        PRODUCTION OVERVIEW:
+        - Total Target: {total_may_target:.1f} tons
+        - Total Historical: {total_historical:.1f} tons
+        - Growth Rate: {((total_may_target/total_historical-1)*100):.1f}%
+        - Total Brands: {len(brand_targets_agg)}
+        - Estimated Cost: ${total_cost:,.0f}
+        - Labor Hours: {total_labor_hours:,.0f}
+        - Avg Lead Time: {avg_lead_time:.1f} days
         
-        Return JSON with this structure:
+        BRAND METRICS:
+        {json.dumps(production_metrics[:5], indent=2)}
+        
+        Return ONLY a JSON object with this structure:
         {{
             "executive_summary": {{
-                "key_insights": ["insight1", "insight2", "insight3"],
-                "overall_assessment": "brief assessment text",
-                "confidence_level": "High"
+                "production_feasibility": "High/Medium/Low",
+                "key_challenges": ["challenge1", "challenge2", "challenge3"],
+                "success_probability": "percentage",
+                "critical_path": "description"
             }},
-            "market_outlook": {{
-                "demand_forecast": "brief forecast",
-                "market_conditions": "current conditions"
+            "capacity_analysis": {{
+                "overall_utilization": "percentage",
+                "bottleneck_areas": ["area1", "area2"],
+                "expansion_needs": "description",
+                "efficiency_recommendations": ["rec1", "rec2"]
             }},
-            "operational_strategy": {{
-                "production_optimization": ["strategy1", "strategy2"],
-                "capacity_planning": "planning recommendation"
+            "resource_planning": {{
+                "labor_strategy": "description",
+                "equipment_requirements": ["req1", "req2"],
+                "material_sourcing": "strategy",
+                "budget_allocation": "recommendations"
             }},
-            "risk_assessment": {{
-                "high_risk_areas": ["risk1", "risk2"],
-                "mitigation_strategies": ["strategy1", "strategy2"]
+            "schedule_optimization": {{
+                "production_sequence": ["brand1", "brand2", "brand3"],
+                "parallel_processing": "opportunities",
+                "milestone_timeline": "key dates",
+                "contingency_plans": ["plan1", "plan2"]
+            }},
+            "quality_assurance": {{
+                "high_risk_products": ["product1", "product2"],
+                "quality_control_points": ["point1", "point2"],
+                "testing_requirements": "description",
+                "compliance_considerations": ["consideration1", "consideration2"]
+            }},
+            "cost_optimization": {{
+                "cost_reduction_opportunities": ["opp1", "opp2"],
+                "roi_projections": "description",
+                "budget_variance_risks": ["risk1", "risk2"],
+                "profitability_analysis": "assessment"
+            }},
+            "risk_management": {{
+                "operational_risks": ["risk1", "risk2", "risk3"],
+                "mitigation_strategies": ["strategy1", "strategy2"],
+                "monitoring_kpis": ["kpi1", "kpi2", "kpi3"],
+                "escalation_procedures": "description"
             }}
         }}
         """
         
-        # Call OpenAI API with error handling
+        # Call OpenAI API
+        api_key = OPENAI_API_KEY if OPENAI_API_KEY else st.session_state.get('openai_api_key')
+        
         try:
             from openai import OpenAI
             client = OpenAI(api_key=api_key)
@@ -570,14 +270,13 @@ def generate_enhanced_insight_analysis(brand_targets_agg, predictions, selected_
             response = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
-                    {"role": "system", "content": "You are a production analyst. Return only valid JSON without markdown."},
+                    {"role": "system", "content": "You are a senior production planning manager with expertise in manufacturing operations. Return only valid JSON."},
                     {"role": "user", "content": prompt}
                 ],
-                max_tokens=1500,
-                temperature=0.2
+                max_tokens=2000,
+                temperature=0.3
             )
             
-            # Parse AI response
             ai_response = response.choices[0].message.content.strip()
             
             # Clean response
@@ -589,212 +288,419 @@ def generate_enhanced_insight_analysis(brand_targets_agg, predictions, selected_
             ai_analysis = json.loads(ai_response)
             
         except json.JSONDecodeError:
-            # Fallback if JSON parsing fails
-            ai_analysis = create_fallback_analysis(market_analysis, brand_metrics)
+            ai_analysis = create_fallback_production_analysis(total_may_target, len(brand_targets_agg))
         except Exception as api_error:
-            return None, brand_metrics, market_analysis, f"API Error: {str(api_error)}"
+            return None, production_metrics, None, f"API Error: {str(api_error)}"
         
-        return ai_analysis, brand_metrics, market_analysis, None
+        # Combine all analysis data
+        comprehensive_analysis = {
+            'ai_analysis': ai_analysis,
+            'production_metrics': production_metrics,
+            'schedule_data': schedule_df,
+            'resource_allocation': resource_df,
+            'summary_stats': {
+                'total_target': total_may_target,
+                'total_cost': total_cost,
+                'total_labor_hours': total_labor_hours,
+                'avg_lead_time': avg_lead_time
+            }
+        }
+        
+        return comprehensive_analysis, production_metrics, schedule_df, None
         
     except Exception as e:
         return None, None, None, f"Analysis Error: {str(e)}"
 
-def display_executive_summary(ai_analysis, market_analysis):
-    """Display executive summary with metrics"""
+def create_fallback_production_analysis(total_target, brand_count):
+    """Create fallback production analysis"""
+    return {
+        "executive_summary": {
+            "production_feasibility": "Medium",
+            "key_challenges": [
+                f"Managing {total_target:.0f} tons production target",
+                f"Coordinating {brand_count} different brands",
+                "Quality control across multiple SKUs"
+            ],
+            "success_probability": "75%",
+            "critical_path": "Setup and production scheduling optimization"
+        },
+        "capacity_analysis": {
+            "overall_utilization": "78%",
+            "bottleneck_areas": ["Machine setup time", "Quality control"],
+            "expansion_needs": "Additional production line consideration",
+            "efficiency_recommendations": ["Optimize changeover times", "Implement lean manufacturing"]
+        },
+        "resource_planning": {
+            "labor_strategy": "Increase skilled operators and add quality control staff",
+            "equipment_requirements": ["Additional production lines", "Quality testing equipment"],
+            "material_sourcing": "Secure raw material supply contracts early",
+            "budget_allocation": "Focus on high-volume, high-margin products"
+        },
+        "schedule_optimization": {
+            "production_sequence": ["High-risk brands first", "High-volume products", "Complex SKUs last"],
+            "parallel_processing": "Setup and quality control can run in parallel",
+            "milestone_timeline": "Weekly review points for progress tracking",
+            "contingency_plans": ["Overtime scheduling", "Outsourcing options"]
+        },
+        "quality_assurance": {
+            "high_risk_products": ["New product variants", "High-growth items"],
+            "quality_control_points": ["Raw material inspection", "In-process testing", "Final inspection"],
+            "testing_requirements": "Enhanced testing for high-risk products",
+            "compliance_considerations": ["Safety standards", "Quality certifications"]
+        },
+        "cost_optimization": {
+            "cost_reduction_opportunities": ["Bulk material purchasing", "Setup time reduction"],
+            "roi_projections": "15-20% improvement with optimization",
+            "budget_variance_risks": ["Material cost fluctuation", "Overtime requirements"],
+            "profitability_analysis": "Focus on high-margin products for maximum ROI"
+        },
+        "risk_management": {
+            "operational_risks": ["Equipment breakdown", "Material shortage", "Quality issues"],
+            "mitigation_strategies": ["Preventive maintenance", "Supplier diversification", "Quality checkpoints"],
+            "monitoring_kpis": ["On-time delivery", "Quality rate", "Cost variance"],
+            "escalation_procedures": "Daily production meetings with weekly management reviews"
+        }
+    }
+
+def display_production_analysis_dashboard():
+    """Display comprehensive production analysis dashboard"""
     
-    st.markdown("#### 🎯 Executive Summary")
+    comprehensive_analysis = st.session_state.get('comprehensive_analysis')
+    if not comprehensive_analysis:
+        return
     
-    # Metrics cards
+    ai_analysis = comprehensive_analysis['ai_analysis']
+    production_metrics = comprehensive_analysis['production_metrics']
+    schedule_data = comprehensive_analysis['schedule_data']
+    resource_allocation = comprehensive_analysis['resource_allocation']
+    summary_stats = comprehensive_analysis['summary_stats']
+    
+    st.divider()
+    st.markdown("### 📊 Production Planning Analysis Dashboard")
+    
+    # Executive Summary Cards
+    display_production_executive_summary(ai_analysis, summary_stats)
+    
+    st.divider()
+    
+    # Production Metrics Table
+    display_production_metrics_table(production_metrics)
+    
+    st.divider()
+    
+    # Capacity and Resource Analysis
+    display_capacity_resource_analysis(ai_analysis, production_metrics, resource_allocation)
+    
+    st.divider()
+    
+    # Production Schedule
+    display_production_schedule(schedule_data, ai_analysis)
+    
+    st.divider()
+    
+    # Risk and Quality Analysis
+    display_risk_quality_analysis(ai_analysis, production_metrics)
+    
+    st.divider()
+    
+    # Cost Analysis
+    display_cost_analysis(ai_analysis, production_metrics)
+
+def display_production_executive_summary(ai_analysis, summary_stats):
+    """Display production executive summary"""
+    
+    st.markdown("#### 🎯 Production Planning Executive Summary")
+    
+    # Key metrics
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        confidence = ai_analysis.get('executive_summary', {}).get('confidence_level', 'Medium')
-        confidence_color = {"High": "🟢", "Medium": "🟡", "Low": "🔴"}.get(confidence, "⚪")
-        st.metric("Confidence", f"{confidence_color} {confidence}")
+        feasibility = ai_analysis.get('executive_summary', {}).get('production_feasibility', 'Medium')
+        feasibility_color = {"High": "🟢", "Medium": "🟡", "Low": "🔴"}.get(feasibility, "⚪")
+        st.metric("Feasibility", f"{feasibility_color} {feasibility}")
     
     with col2:
-        total_capacity = market_analysis.get('total_capacity_requirement', 0)
-        st.metric("Target Capacity", f"{total_capacity:.1f} tons")
+        success_prob = ai_analysis.get('executive_summary', {}).get('success_probability', 'N/A')
+        st.metric("Success Rate", success_prob)
     
     with col3:
-        growth_rate = market_analysis.get('capacity_growth_vs_historical', 0)
-        st.metric("Growth Rate", f"{growth_rate:.1f}%")
+        total_cost = summary_stats.get('total_cost', 0)
+        st.metric("Total Cost", f"${total_cost:,.0f}")
     
     with col4:
-        high_risk = market_analysis.get('high_risk_brands', 0)
-        st.metric("High Risk Brands", high_risk)
+        avg_lead_time = summary_stats.get('avg_lead_time', 0)
+        st.metric("Avg Lead Time", f"{avg_lead_time:.1f} days")
     
-    # Key insights
-    insights = ai_analysis.get('executive_summary', {}).get('key_insights', [])
-    if insights:
-        st.markdown("**🔍 Key Insights:**")
-        for i, insight in enumerate(insights, 1):
-            st.markdown(f"{i}. {insight}")
+    # Key challenges
+    challenges = ai_analysis.get('executive_summary', {}).get('key_challenges', [])
+    if challenges:
+        st.markdown("**⚠️ Key Production Challenges:**")
+        for i, challenge in enumerate(challenges, 1):
+            st.markdown(f"{i}. {challenge}")
     
-    # Overall assessment
-    assessment = ai_analysis.get('executive_summary', {}).get('overall_assessment', '')
-    if assessment:
-        st.info(f"**📋 Assessment:** {assessment}")
+    # Critical path
+    critical_path = ai_analysis.get('executive_summary', {}).get('critical_path', '')
+    if critical_path:
+        st.info(f"**🎯 Critical Path:** {critical_path}")
 
-def display_brand_performance(brand_metrics):
-    """Display brand performance analysis"""
+def display_production_metrics_table(production_metrics):
+    """Display detailed production metrics table"""
     
-    st.markdown("#### 🏭 Brand Performance")
+    st.markdown("#### 📋 Detailed Production Metrics Analysis")
     
-    # Convert to DataFrame
-    df_brands = pd.DataFrame(brand_metrics)
+    # Convert to DataFrame for better display
+    df_metrics = pd.DataFrame(production_metrics)
     
-    if df_brands.empty:
-        st.warning("No brand data available")
-        return
+    # Create comprehensive metrics table
+    display_df = df_metrics[[
+        'brand', 'may_target', 'sku_count', 'capacity_utilization', 
+        'lead_time_days', 'quality_risk', 'cost_per_ton', 'growth_ratio'
+    ]].copy()
     
-    # Performance charts
+    display_df.columns = [
+        'Brand', 'Target (tons)', 'SKU Count', 'Capacity (%)', 
+        'Lead Time (days)', 'Quality Risk', 'Cost/Ton ($)', 'Growth Ratio'
+    ]
+    
+    # Color coding for risks
+    def highlight_risk(val):
+        if isinstance(val, str):
+            if val == 'High':
+                return 'background-color: #ffcccc'
+            elif val == 'Medium':
+                return 'background-color: #fff3cd'
+            elif val == 'Low':
+                return 'background-color: #d4edda'
+        return ''
+    
+    styled_df = display_df.style.applymap(highlight_risk, subset=['Quality Risk'])
+    st.dataframe(styled_df, use_container_width=True)
+    
+    # Summary statistics
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        total_target = df_metrics['may_target'].sum()
+        st.metric("Total Production Target", f"{total_target:.1f} tons")
+    
+    with col2:
+        avg_capacity = df_metrics['capacity_utilization'].mean()
+        st.metric("Average Capacity Utilization", f"{avg_capacity:.1f}%")
+    
+    with col3:
+        high_risk_count = len(df_metrics[df_metrics['quality_risk'] == 'High'])
+        st.metric("High Risk Brands", high_risk_count)
+
+def display_capacity_resource_analysis(ai_analysis, production_metrics, resource_allocation):
+    """Display capacity and resource analysis"""
+    
+    st.markdown("#### ⚙️ Capacity & Resource Analysis")
+    
     col1, col2 = st.columns(2)
     
     with col1:
-        # Growth vs Risk scatter plot
-        fig_scatter = px.scatter(
-            df_brands,
-            x='growth_rate',
-            y='risk_score',
-            size='may_target',
-            color='market_share',
-            hover_name='brand',
-            title="Growth vs Risk Analysis",
-            labels={
-                'growth_rate': 'Growth Rate (%)',
-                'risk_score': 'Risk Score (1-10)',
-                'may_target': 'Target (tons)',
-                'market_share': 'Market Share (%)'
-            }
-        )
-        st.plotly_chart(fig_scatter, use_container_width=True)
+        st.markdown("**🏭 Capacity Analysis**")
+        
+        capacity_analysis = ai_analysis.get('capacity_analysis', {})
+        
+        utilization = capacity_analysis.get('overall_utilization', 'N/A')
+        st.info(f"**Overall Utilization:** {utilization}")
+        
+        bottlenecks = capacity_analysis.get('bottleneck_areas', [])
+        if bottlenecks:
+            st.markdown("**Bottleneck Areas:**")
+            for bottleneck in bottlenecks:
+                st.markdown(f"🔴 {bottleneck}")
+        
+        efficiency_recs = capacity_analysis.get('efficiency_recommendations', [])
+        if efficiency_recs:
+            st.markdown("**Efficiency Recommendations:**")
+            for rec in efficiency_recs:
+                st.markdown(f"💡 {rec}")
     
     with col2:
-        # Market share pie chart
-        fig_pie = px.pie(
-            df_brands,
-            values='market_share',
-            names='brand',
-            title="Market Share Distribution"
+        st.markdown("**👥 Resource Planning**")
+        
+        resource_planning = ai_analysis.get('resource_planning', {})
+        
+        labor_strategy = resource_planning.get('labor_strategy', 'N/A')
+        st.success(f"**Labor Strategy:** {labor_strategy}")
+        
+        equipment_reqs = resource_planning.get('equipment_requirements', [])
+        if equipment_reqs:
+            st.markdown("**Equipment Requirements:**")
+            for req in equipment_reqs:
+                st.markdown(f"🔧 {req}")
+    
+    # Resource allocation chart
+    if not resource_allocation.empty:
+        st.markdown("**📊 Resource Allocation by Brand**")
+        
+        fig_resource = px.bar(
+            resource_allocation,
+            x='brand',
+            y=['operators', 'supervisors', 'qc_staff'],
+            title="Human Resource Allocation",
+            labels={'value': 'Number of Staff', 'variable': 'Role'},
+            barmode='group'
         )
-        st.plotly_chart(fig_pie, use_container_width=True)
-    
-    # Performance table
-    st.markdown("**📋 Brand Summary**")
-    
-    display_df = df_brands.copy()
-    display_df['Risk Level'] = display_df['risk_score'].apply(
-        lambda x: "🔴 High" if x >= 7 else "🟡 Medium" if x >= 4 else "🟢 Low"
-    )
-    
-    table_columns = ['brand', 'may_target', 'growth_rate', 'market_share', 'Risk Level', 'sku_count']
-    table_df = display_df[table_columns].rename(columns={
-        'brand': 'Brand',
-        'may_target': 'Target (tons)',
-        'growth_rate': 'Growth (%)',
-        'market_share': 'Market Share (%)',
-        'sku_count': 'SKUs'
-    })
-    
-    st.dataframe(table_df, use_container_width=True)
+        st.plotly_chart(fig_resource, use_container_width=True)
 
-def display_recommendations(ai_analysis):
-    """Display AI recommendations"""
+def display_production_schedule(schedule_data, ai_analysis):
+    """Display production schedule analysis"""
     
-    st.markdown("#### 💡 Strategic Recommendations")
+    st.markdown("#### 📅 Production Schedule Optimization")
     
-    # Market outlook
-    market_outlook = ai_analysis.get('market_outlook', {})
-    if market_outlook:
+    if not schedule_data.empty:
+        # Timeline chart
+        fig_timeline = px.timeline(
+            schedule_data,
+            x_start='start_date',
+            x_end='end_date',
+            y='brand',
+            color='phase',
+            title="Production Timeline by Brand",
+            hover_data=['resources', 'deliverable']
+        )
+        fig_timeline.update_yaxes(categoryorder="total ascending")
+        st.plotly_chart(fig_timeline, use_container_width=True)
+        
+        # Schedule optimization recommendations
+        schedule_opt = ai_analysis.get('schedule_optimization', {})
+        
         col1, col2 = st.columns(2)
         
         with col1:
-            st.markdown("**🌍 Market Outlook**")
-            demand = market_outlook.get('demand_forecast', 'N/A')
-            st.info(f"**Demand:** {demand}")
-            
-            conditions = market_outlook.get('market_conditions', 'N/A')
-            st.info(f"**Conditions:** {conditions}")
+            st.markdown("**🎯 Recommended Production Sequence:**")
+            sequence = schedule_opt.get('production_sequence', [])
+            for i, item in enumerate(sequence, 1):
+                st.markdown(f"{i}. {item}")
         
         with col2:
-            st.markdown("**⚠️ Risk Assessment**")
+            st.markdown("**⚡ Optimization Opportunities:**")
             
-            risks = ai_analysis.get('risk_assessment', {}).get('high_risk_areas', [])
-            if risks:
-                for risk in risks[:3]:
-                    st.warning(f"🔴 {risk}")
-    
-    # Operational strategy
-    operational = ai_analysis.get('operational_strategy', {})
-    if operational:
-        st.markdown("**⚙️ Operational Strategy**")
-        
-        optimizations = operational.get('production_optimization', [])
-        if optimizations:
-            st.markdown("**Production Optimization:**")
-            for opt in optimizations:
-                st.markdown(f"• {opt}")
-        
-        capacity = operational.get('capacity_planning', '')
-        if capacity:
-            st.success(f"**Capacity Planning:** {capacity}")
+            parallel = schedule_opt.get('parallel_processing', 'N/A')
+            st.info(f"**Parallel Processing:** {parallel}")
+            
+            timeline = schedule_opt.get('milestone_timeline', 'N/A')
+            st.info(f"**Timeline:** {timeline}")
 
-def display_analysis_results():
-    """Display analysis results"""
+def display_risk_quality_analysis(ai_analysis, production_metrics):
+    """Display risk and quality analysis"""
     
-    ai_analysis = st.session_state.get('ai_analysis')
-    brand_metrics = st.session_state.get('brand_metrics', [])
-    market_analysis = st.session_state.get('market_analysis', {})
-    
-    if not ai_analysis:
-        return
-    
-    st.divider()
-    st.markdown("### 📊 Analysis Results")
-    
-    # Executive Summary
-    display_executive_summary(ai_analysis, market_analysis)
-    
-    # Brand Performance
-    if brand_metrics:
-        display_brand_performance(brand_metrics)
-    
-    # Recommendations
-    display_recommendations(ai_analysis)
-    
-    # Download section
-    st.divider()
-    st.markdown("#### 📥 Export Results")
+    st.markdown("#### ⚠️ Risk Management & Quality Assurance")
     
     col1, col2 = st.columns(2)
     
     with col1:
-        # Download AI analysis as JSON
-        analysis_json = json.dumps(ai_analysis, indent=2, ensure_ascii=False)
-        st.download_button(
-            label="📄 Download Analysis (JSON)",
-            data=analysis_json,
-            file_name=f"ai_analysis_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.json",
-            mime="application/json"
-        )
+        st.markdown("**🛡️ Risk Management**")
+        
+        risk_mgmt = ai_analysis.get('risk_management', {})
+        
+        operational_risks = risk_mgmt.get('operational_risks', [])
+        if operational_risks:
+            st.markdown("**Operational Risks:**")
+            for risk in operational_risks:
+                st.markdown(f"⚠️ {risk}")
+        
+        mitigation = risk_mgmt.get('mitigation_strategies', [])
+        if mitigation:
+            st.markdown("**Mitigation Strategies:**")
+            for strategy in mitigation:
+                st.markdown(f"✅ {strategy}")
     
     with col2:
-        # Download brand metrics as CSV
-        if st.session_state.get('brand_metrics'):
-            df_metrics = pd.DataFrame(st.session_state['brand_metrics'])
-            csv_data = df_metrics.to_csv(index=False)
-            st.download_button(
-                label="📊 Download Metrics (CSV)",
-                data=csv_data,
-                file_name=f"brand_metrics_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                mime="text/csv"
-            )
+        st.markdown("**🔍 Quality Assurance**")
+        
+        quality_assurance = ai_analysis.get('quality_assurance', {})
+        
+        high_risk_products = quality_assurance.get('high_risk_products', [])
+        if high_risk_products:
+            st.markdown("**High Risk Products:**")
+            for product in high_risk_products:
+                st.markdown(f"🔴 {product}")
+        
+        qc_points = quality_assurance.get('quality_control_points', [])
+        if qc_points:
+            st.markdown("**Quality Control Points:**")
+            for point in qc_points:
+                st.markdown(f"🎯 {point}")
+    
+    # Risk distribution chart
+    df_metrics = pd.DataFrame(production_metrics)
+    if not df_metrics.empty:
+        risk_counts = df_metrics['quality_risk'].value_counts()
+        
+        fig_risk = px.pie(
+            values=risk_counts.values,
+            names=risk_counts.index,
+            title="Quality Risk Distribution",
+            color_discrete_map={
+                'High': '#ff4444',
+                'Medium': '#ffaa00',
+                'Low': '#44ff44'
+            }
+        )
+        st.plotly_chart(fig_risk, use_container_width=True)
+
+def display_cost_analysis(ai_analysis, production_metrics):
+    """Display cost analysis"""
+    
+    st.markdown("#### 💰 Cost Analysis & Optimization")
+    
+    df_metrics = pd.DataFrame(production_metrics)
+    
+    # Cost breakdown chart
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Cost by brand
+        fig_cost = px.bar(
+            df_metrics,
+            x='brand',
+            y='total_cost',
+            title="Total Cost by Brand",
+            labels={'total_cost': 'Total Cost ($)', 'brand': 'Brand'}
+        )
+        st.plotly_chart(fig_cost, use_container_width=True)
+    
+    with col2:
+        # Cost per ton analysis
+        fig_cost_per_ton = px.scatter(
+            df_metrics,
+            x='may_target',
+            y='cost_per_ton',
+            size='sku_count',
+            hover_name='brand',
+            title="Cost Efficiency Analysis",
+            labels={'may_target': 'Target Volume (tons)', 'cost_per_ton': 'Cost per Ton ($)'}
+        )
+        st.plotly_chart(fig_cost_per_ton, use_container_width=True)
+    
+    # Cost optimization recommendations
+    cost_opt = ai_analysis.get('cost_optimization', {})
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**💡 Cost Reduction Opportunities:**")
+        opportunities = cost_opt.get('cost_reduction_opportunities', [])
+        for opp in opportunities:
+            st.markdown(f"• {opp}")
+    
+    with col2:
+        st.markdown("**📈 Financial Projections:**")
+        
+        roi_proj = cost_opt.get('roi_projections', 'N/A')
+        st.success(f"**ROI:** {roi_proj}")
+        
+        profitability = cost_opt.get('profitability_analysis', 'N/A')
+        st.info(f"**Profitability:** {profitability}")
 
 def display_insights_section(brand_targets_agg, predictions, selected_brand):
-    """Display enhanced AI insights section"""
+    """Enhanced main display function for production insights"""
     
-    st.subheader("🤖 AI Strategic Analysis")
+    st.subheader("🤖 AI Production Planning Analysis")
     
     # Check OpenAI availability
     if not OPENAI_AVAILABLE:
@@ -806,7 +712,7 @@ def display_insights_section(brand_targets_agg, predictions, selected_brand):
     has_api_key, source = setup_openai_api()
     
     if not has_api_key:
-        st.warning("⚠️ OpenAI API Key required")
+        st.warning("⚠️ OpenAI API Key required for detailed production analysis")
         
         with st.expander("🔧 Setup API Key"):
             if 'openai_api_key' not in st.session_state:
@@ -820,10 +726,10 @@ def display_insights_section(brand_targets_agg, predictions, selected_brand):
             st.session_state.openai_api_key = api_key
     
     # Analysis button
-    if st.button("🚀 Generate Analysis", type="primary", use_container_width=True):
-        with st.spinner("🧠 Analyzing data..."):
+    if st.button("🚀 Generate Production Analysis", type="primary", use_container_width=True):
+        with st.spinner("🧠 Analyzing production planning requirements..."):
             try:
-                ai_analysis, brand_metrics, market_analysis, error = generate_enhanced_insight_analysis(
+                comprehensive_analysis, production_metrics, schedule_data, error = generate_enhanced_insight_analysis(
                     brand_targets_agg, predictions, selected_brand
                 )
                 
@@ -831,493 +737,69 @@ def display_insights_section(brand_targets_agg, predictions, selected_brand):
                     st.error(f"❌ {error}")
                     return
                 
-                if not ai_analysis:
-                    st.error("❌ Failed to generate analysis")
+                if not comprehensive_analysis:
+                    st.error("❌ Failed to generate production analysis")
                     return
                 
                 # Store in session state
-                st.session_state.ai_analysis = ai_analysis
-                st.session_state.brand_metrics = brand_metrics
-                st.session_state.market_analysis = market_analysis
+                st.session_state.comprehensive_analysis = comprehensive_analysis
                 
-                st.success("✅ Analysis completed!")
+                st.success("✅ Production analysis completed!")
+                st.balloons()
                 
             except Exception as e:
                 st.error(f"❌ Error: {str(e)}")
     
-    # Display results
-    if st.session_state.get('ai_analysis'):
-        display_analysis_results()
-
-def create_executive_summary(brand_targets_agg, predictions):
-    """Create executive summary for the analysis"""
-    
-    summary_data = {
-        "total_brands": len(brand_targets_agg),
-        "total_skus": sum(len(pred.get('mayDistribution', {})) for pred in predictions.values()),
-        "may_total": sum(targets['mayTarget'] for targets in brand_targets_agg.values()),
-        "w1_total": sum(targets['w1Target'] for targets in brand_targets_agg.values()),
-        "historical_total": sum(targets.get('historicalTonnage', 0) for targets in brand_targets_agg.values()),
-    }
-    
-    # Calculate growth
-    if summary_data["historical_total"] > 0:
-        may_growth = summary_data["may_total"] / summary_data["historical_total"]
-        w1_growth = summary_data["w1_total"] / summary_data["historical_total"]
-    else:
-        may_growth = w1_growth = 0
-    
-    # Show Executive Summary
-    st.markdown("### 📋 Executive Summary")
-    
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("🏭 Brands", summary_data["total_brands"])
-    with col2:
-        st.metric("📦 SKUs", summary_data["total_skus"])
-    with col3:
-        st.metric("🎯 May Target", f"{summary_data['may_total']:.1f} tons")
-    with col4:
-        st.metric("📅 W1 Target", f"{summary_data['w1_total']:.1f} tons")
-    
-    col5, col6, col7, col8 = st.columns(4)
-    with col5:
-        st.metric("📈 Historical", f"{summary_data['historical_total']:.1f} tons")
-    with col6:
-        st.metric("📊 May Growth", f"{may_growth:.1f}x")
-    with col7:
-        st.metric("📈 W1 Growth", f"{w1_growth:.1f}x")
-    with col8:
-        risk_level = "🔴 High" if may_growth > 5 or w1_growth > 5 else "🟡 Medium" if may_growth > 3 or w1_growth > 3 else "🟢 Low"
-        st.metric("⚠️ Risk Level", risk_level)
-    
-    return summary_data
-
-def create_period_selector(widget_key):
-    """Create period selector widget"""
-    period_options = {'may': 'May 📅', 'w1': 'Week 1 📆'}
-    period_keys = list(period_options.keys())
-    try:
-        current_period_index = period_keys.index(st.session_state.selected_period)
-    except ValueError:
-        current_period_index = 0
-        st.session_state.selected_period = period_keys[0]
-    
-    st.session_state.selected_period = st.radio(
-        "Select Period:",
-        options=period_keys,
-        format_func=lambda x: period_options[x],
-        horizontal=True,
-        index=current_period_index,
-        key=widget_key
-    )
-    return period_options[st.session_state.selected_period]
-
-def create_brand_selector(widget_key):
-    """Create brand selector widget"""
-    if not st.session_state.predictions:
-        return None
+    # Display comprehensive results
+    if st.session_state.get('comprehensive_analysis'):
+        display_production_analysis_dashboard()
         
-    brand_list = list(st.session_state.predictions.keys())
-    if not brand_list:
-        st.warning("No prediction data available for any brand")
-        return None
+        # Download options
+        st.divider()
+        display_production_download_options()
 
-    if st.session_state.selected_brand not in brand_list:
-         st.session_state.selected_brand = brand_list[0] if brand_list else None
+def display_production_download_options():
+    """Display download options for production analysis"""
     
-    try:
-        current_brand_index = brand_list.index(st.session_state.selected_brand) if st.session_state.selected_brand else 0
-    except ValueError:
-        current_brand_index = 0
-        st.session_state.selected_brand = brand_list[0] if brand_list else None
-
-    st.session_state.selected_brand = st.selectbox(
-        "Select Brand:", 
-        options=brand_list,
-        index=current_brand_index,
-        key=widget_key
-    )
-    return st.session_state.selected_brand
-
-def generate_excel_download(predictions_data, selected_period_key):
-    """Generate Excel file for download"""
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        # Create summary sheet
-        summary_data = []
-        for brand, data in predictions_data.items():
-            period_dist_key = 'mayDistribution' if selected_period_key == 'may' else 'w1Distribution'
-            target_key = 'mayTarget' if selected_period_key == 'may' else 'w1Target'
-            
-            summary_data.append({
-                'Brand': brand,
-                'Target (Tons)': data[target_key],
-                'Historical (Tons)': data.get('historicalTonnage', 0),
-                'SKU Count': len(data.get(period_dist_key, {})),
-                'Categories': ', '.join(data.get('categories', []))
-            })
-        
-        summary_df = pd.DataFrame(summary_data)
-        summary_df.to_excel(writer, index=False, sheet_name='Summary')
-        
-        # Create sheet for each brand
-        for brand, data in predictions_data.items():
-            period_dist_key = 'mayDistribution' if selected_period_key == 'may' else 'w1Distribution'
-            dist_data = data.get(period_dist_key)
-
-            if dist_data:
-                df_dist = pd.DataFrame.from_dict(dist_data, orient='index').reset_index()
-                
-                rename_map = {
-                    'index': 'SKU',
-                    'itemName': 'Product Name',
-                    'tonnage': 'Predicted Tonnage',
-                    'percentage': 'Percentage (%)',
-                    'historicalTonnage': 'Historical Tonnage'
-                }
-                
-                df_dist.rename(columns=rename_map, inplace=True)
-                
-                if 'Percentage (%)' in df_dist.columns:
-                    df_dist['Percentage (%)'] = (df_dist['Percentage (%)'] * 100).round(2)
-                
-                if 'Predicted Tonnage' in df_dist.columns:
-                    df_dist['Predicted Tonnage'] = df_dist['Predicted Tonnage'].round(4)
-                
-                if 'Historical Tonnage' in df_dist.columns:
-                    df_dist['Historical Tonnage'] = df_dist['Historical Tonnage'].round(4)
-                
-                df_dist = df_dist.sort_values(by='Predicted Tonnage', ascending=False)
-                
-                # Add Growth Ratio column
-                if 'Historical Tonnage' in df_dist.columns and 'Predicted Tonnage' in df_dist.columns:
-                    df_dist['Growth Ratio'] = (df_dist['Predicted Tonnage'] / df_dist['Historical Tonnage']).round(2)
-                    df_dist['Growth Ratio'] = df_dist['Growth Ratio'].replace([float('inf'), -float('inf')], 'N/A')
-                
-                final_columns_order = ['SKU', 'Product Name', 'Predicted Tonnage', 'Historical Tonnage', 'Growth Ratio', 'Percentage (%)']
-                output_df = df_dist.reindex(columns=[col for col in final_columns_order if col in df_dist.columns])
-                
-                sheet_name = brand.replace('/', '-').replace('\\', '-')
-                sheet_name = sheet_name[:31]
-                
-                output_df.to_excel(writer, index=False, sheet_name=sheet_name)
+    st.markdown("#### 📥 Export Production Analysis")
     
-    processed_data = output.getvalue()
-    return processed_data
-
-# Streamlit App
-st.set_page_config(layout="wide", page_title="Production Planning App")
-st.title("🏭 Production Planning Application")
-st.markdown("📊 Analyze historical data and targets to create precise SKU-level production plans")
-
-# Initialize session state
-for key in ['historical_df', 'category_targets', 'brand_targets_agg', 'predictions', 'selected_period', 'selected_brand']:
-    if key not in st.session_state:
-        st.session_state[key] = None if key != 'selected_period' else 'may'
-
-tab1, tab2, tab3 = st.tabs(["1. 📁 Upload Data", "2. 📊 Analysis", "3. 📋 Results"])
-
-with tab1:
-    st.header("📁 Upload Data Files")
+    comprehensive_analysis = st.session_state.get('comprehensive_analysis')
+    if not comprehensive_analysis:
+        return
     
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     
     with col1:
-        st.subheader("📈 Historical Data")
-        historical_file = st.file_uploader("Upload Historical Excel File", type=['xlsx', 'xls'], key="hist")
-        
-        if historical_file:
-            st.session_state.historical_df = process_historical_file(historical_file)
-            if st.session_state.historical_df is not None:
-                st.success("✅ Historical data loaded successfully")
-
+        # Download complete analysis as JSON
+        analysis_json = json.dumps(comprehensive_analysis, indent=2, ensure_ascii=False, default=str)
+        st.download_button(
+            label="📄 Complete Analysis (JSON)",
+            data=analysis_json,
+            file_name=f"production_analysis_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.json",
+            mime="application/json"
+        )
+    
     with col2:
-        st.subheader("🎯 Target Data")
-        target_file = st.file_uploader("Upload Target Excel File", type=['xlsx', 'xls'], key="target")
-        
-        if target_file:
-            st.session_state.category_targets = process_target_file(target_file)
-            if st.session_state.category_targets:
-                st.success("✅ Target data loaded successfully")
-
-    st.divider()
-    
-    # Generate button
-    generate_disabled = not (st.session_state.historical_df is not None and st.session_state.category_targets is not None)
-    
-    if st.button("🚀 Generate SKU Distribution", disabled=generate_disabled, type="primary", use_container_width=True):
-        with st.spinner("Processing data and generating predictions..."):
-            try:
-                # Filter historical data by month for proper comparison
-                filtered_historical = filter_historical_by_month(st.session_state.historical_df, "May")
-                
-                # Map categories to brands
-                _, st.session_state.brand_targets_agg = map_categories_to_brands(
-                    st.session_state.category_targets, filtered_historical)
-                
-                if st.session_state.brand_targets_agg:
-                    # Generate predictions
-                    st.session_state.predictions, _ = predict_sku_distribution(
-                        st.session_state.brand_targets_agg, filtered_historical)
-                    
-                    if st.session_state.predictions:
-                        st.success("🎉 SKU distribution generated successfully!")
-                        st.balloons()
-                    else:
-                        st.warning("⚠️ No predictions could be generated")
-                else:
-                    st.error("❌ No brand mappings created")
-                    
-            except Exception as e:
-                st.error(f"❌ Processing error: {str(e)}")
-
-with tab2:
-    st.header("📊 Analysis")
-    if not st.session_state.predictions:
-        st.info("📝 Please upload data and generate SKU distribution first")
-    else:
-        # Executive Summary
-        create_executive_summary(st.session_state.brand_targets_agg, st.session_state.predictions)
-        
-        st.divider()
-        
-        selected_period_name = create_period_selector("analysis_period_selector")
-        
-        st.subheader("📈 Brand Target Distribution")
-        if st.session_state.brand_targets_agg:
-            brand_target_data = []
-            target_key = 'mayTarget' if st.session_state.selected_period == 'may' else 'w1Target'
-            for brand, targets in st.session_state.brand_targets_agg.items():
-                if targets[target_key] > 0:
-                    brand_target_data.append({'Brand': brand, 'Tonnage': targets[target_key]})
-            
-            if brand_target_data:
-                df_brand_targets = pd.DataFrame(brand_target_data)
-                fig_brand_targets = px.bar(
-                    df_brand_targets, 
-                    x='Brand', 
-                    y='Tonnage', 
-                    title=f"Brand Targets for {selected_period_name}",
-                    labels={'Tonnage':'Tons'},
-                    color='Tonnage',
-                    color_continuous_scale='Blues'
-                )
-                st.plotly_chart(fig_brand_targets, use_container_width=True)
-
-        st.divider()
-        st.subheader("🎯 SKU Distribution")
-        
-        col_brand_sel, col_toggle_sku = st.columns([3,1])
-        with col_brand_sel:
-            selected_brand = create_brand_selector("analysis_brand_selector")
-        with col_toggle_sku:
-            show_all_skus = st.checkbox("Show All SKUs", value=False, key="show_all_skus_toggle")
-
-        if selected_brand:
-            brand_data = st.session_state.predictions.get(selected_brand)
-            dist_key = 'mayDistribution' if st.session_state.selected_period == 'may' else 'w1Distribution'
-            sku_distribution = brand_data.get(dist_key)
-
-            if sku_distribution:
-                df_sku_dist = pd.DataFrame.from_dict(sku_distribution, orient='index').reset_index()
-                df_sku_dist.rename(columns={
-                    'index': 'SKU', 
-                    'itemName': 'Product Name', 
-                    'tonnage': 'Predicted Tonnage', 
-                    'percentage': 'Percentage',
-                    'historicalTonnage': 'Historical Tonnage'
-                }, inplace=True)
-                df_sku_dist = df_sku_dist.sort_values(by='Predicted Tonnage', ascending=False)
-                
-                # Add Growth Ratio column
-                if 'Historical Tonnage' in df_sku_dist.columns:
-                    df_sku_dist['Growth Ratio'] = (df_sku_dist['Predicted Tonnage'] / df_sku_dist['Historical Tonnage']).round(2)
-                    df_sku_dist['Growth Ratio'] = df_sku_dist['Growth Ratio'].replace([float('inf')], 999.0)
-                
-                display_df_sku = df_sku_dist if show_all_skus else df_sku_dist.head(15)
-                
-                if not display_df_sku.empty:
-                    # Show statistics summary
-                    col1, col2, col3, col4 = st.columns(4)
-                    with col1:
-                        st.metric("SKU Count", len(df_sku_dist))
-                    with col2:
-                        total_target = df_sku_dist['Predicted Tonnage'].sum()
-                        st.metric("Total Target", f"{total_target:.1f} tons")
-                    with col3:
-                        total_historical = df_sku_dist['Historical Tonnage'].sum()
-                        st.metric("Total Historical", f"{total_historical:.1f} tons")
-                    with col4:
-                        overall_growth = total_target / total_historical if total_historical > 0 else 0
-                        st.metric("Growth", f"{overall_growth:.1f}x")
-                    
-                    # Bar chart
-                    fig_sku_bar = px.bar(
-                        display_df_sku, 
-                        y='SKU', 
-                        x='Predicted Tonnage', 
-                        orientation='h',
-                        title=f"SKU Distribution for {selected_brand} ({selected_period_name})",
-                        labels={'Predicted Tonnage':'Tons'}, 
-                        hover_data=['Product Name', 'Historical Tonnage', 'Growth Ratio'],
-                        color='Growth Ratio',
-                        color_continuous_scale='RdYlGn_r'
-                    )
-                    fig_sku_bar.update_layout(yaxis={'categoryorder':'total ascending'}, height=600)
-                    st.plotly_chart(fig_sku_bar, use_container_width=True)
-
-                    # Pie chart (Top SKUs)
-                    top_n_pie = 8
-                    df_pie_data = df_sku_dist.head(top_n_pie).copy()
-                    if len(df_sku_dist) > top_n_pie:
-                        others_tonnage = df_sku_dist.iloc[top_n_pie:]['Predicted Tonnage'].sum()
-                        if others_tonnage > 0.01:
-                            others_row = pd.DataFrame([{
-                                'SKU': 'Others', 
-                                'Product Name': f'Others ({len(df_sku_dist) - top_n_pie} SKUs)', 
-                                'Predicted Tonnage': others_tonnage, 
-                                'Percentage': 0.0
-                            }])
-                            df_pie_data = pd.concat([df_pie_data, others_row], ignore_index=True)
-
-                    fig_sku_pie = px.pie(
-                        df_pie_data, 
-                        values='Predicted Tonnage', 
-                        names='SKU', 
-                        title=f"Top SKU Proportion for {selected_brand} ({selected_period_name})", 
-                        hover_data=['Product Name']
-                    )
-                    st.plotly_chart(fig_sku_pie, use_container_width=True)
-                    
-                    # Data table
-                    st.subheader("📋 SKU Details")
-                    display_columns = ['SKU', 'Product Name', 'Predicted Tonnage', 'Historical Tonnage', 'Growth Ratio', 'Percentage']
-                    display_table = display_df_sku[display_columns].copy()
-                    display_table['Predicted Tonnage'] = display_table['Predicted Tonnage'].round(3)
-                    display_table['Historical Tonnage'] = display_table['Historical Tonnage'].round(3)
-                    display_table['Percentage'] = (display_table['Percentage'] * 100).round(2)
-                    
-                    st.dataframe(display_table, use_container_width=True)
-            else:
-                st.warning(f"No SKU distribution data for {selected_brand} in {selected_period_name}")
-
-        st.divider()
-        
-        # AI Insights Analysis Section
-        if st.session_state.brand_targets_agg and st.session_state.predictions:
-            display_insights_section(
-                st.session_state.brand_targets_agg, 
-                st.session_state.predictions, 
-                selected_brand
+        # Download production metrics as CSV
+        production_metrics = comprehensive_analysis.get('production_metrics', [])
+        if production_metrics:
+            df_metrics = pd.DataFrame(production_metrics)
+            csv_data = df_metrics.to_csv(index=False)
+            st.download_button(
+                label="📊 Production Metrics (CSV)",
+                data=csv_data,
+                file_name=f"production_metrics_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv"
             )
-
-with tab3:
-    st.header("📋 Production Plan Results")
-    if not st.session_state.predictions:
-        st.info("📝 Please upload data and generate SKU distribution first")
-    else:
-        selected_period_name_results = create_period_selector("results_period_selector")
-        selected_brand_res = create_brand_selector("results_brand_selector")
-
-        if selected_brand_res:
-            brand_data_res = st.session_state.predictions.get(selected_brand_res)
-            dist_key_res = 'mayDistribution' if st.session_state.selected_period == 'may' else 'w1Distribution'
-            sku_distribution_res = brand_data_res.get(dist_key_res)
-
-            if sku_distribution_res:
-                st.subheader(f"📊 Production Plan: {selected_brand_res} - {selected_period_name_results}")
-                
-                df_results = pd.DataFrame.from_dict(sku_distribution_res, orient='index').reset_index()
-                df_results.rename(columns={
-                    'index': 'SKU Code', 
-                    'itemName': 'Product Name', 
-                    'tonnage': 'Production Plan (tons)', 
-                    'percentage': 'Proportion (%)',
-                    'historicalTonnage': 'Historical Data (tons)'
-                }, inplace=True)
-                
-                # Calculate Growth Ratio
-                df_results['Growth Ratio'] = (df_results['Production Plan (tons)'] / df_results['Historical Data (tons)']).round(2)
-                df_results['Growth Ratio'] = df_results['Growth Ratio'].replace([float('inf')], 999.0)
-                
-                # Format data
-                df_results['Proportion (%)'] = (df_results['Proportion (%)'] * 100).round(2)
-                df_results['Production Plan (tons)'] = df_results['Production Plan (tons)'].round(3)
-                df_results['Historical Data (tons)'] = df_results['Historical Data (tons)'].round(3)
-                
-                # Sort by production plan
-                df_results = df_results.sort_values(by='Production Plan (tons)', ascending=False)
-                
-                # Show summary statistics
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.metric("🎯 Total Target", f"{df_results['Production Plan (tons)'].sum():.1f} tons")
-                with col2:
-                    st.metric("📈 Historical Total", f"{df_results['Historical Data (tons)'].sum():.1f} tons")
-                with col3:
-                    total_growth = df_results['Production Plan (tons)'].sum() / df_results['Historical Data (tons)'].sum()
-                    st.metric("📊 Overall Growth", f"{total_growth:.1f}x")
-                with col4:
-                    st.metric("🔢 SKU Count", len(df_results))
-                
-                # Data filtering
-                filter_option = st.selectbox(
-                    "Filter Data:",
-                    ["All", "Production > 1 ton", "Production > 0.5 ton", "Growth > 3x", "Top 20 SKU"]
-                )
-                
-                if filter_option == "Production > 1 ton":
-                    df_display = df_results[df_results['Production Plan (tons)'] > 1]
-                elif filter_option == "Production > 0.5 ton":
-                    df_display = df_results[df_results['Production Plan (tons)'] > 0.5]
-                elif filter_option == "Growth > 3x":
-                    df_display = df_results[df_results['Growth Ratio'] > 3]
-                elif filter_option == "Top 20 SKU":
-                    df_display = df_results.head(20)
-                else:
-                    df_display = df_results
-                
-                # Show table
-                st.dataframe(
-                    df_display[['SKU Code', 'Product Name', 'Production Plan (tons)', 'Historical Data (tons)', 'Growth Ratio', 'Proportion (%)']],
-                    use_container_width=True,
-                    height=400
-                )
-                
-                # Show warnings for high growth SKUs
-                high_growth_skus = df_results[df_results['Growth Ratio'] > 5]
-                if len(high_growth_skus) > 0:
-                    st.warning(f"⚠️ **Found SKUs with very high growth ({len(high_growth_skus)} items):**")
-                    st.dataframe(
-                        high_growth_skus[['SKU Code', 'Product Name', 'Production Plan (tons)', 'Growth Ratio']].head(10),
-                        use_container_width=True
-                    )
-            else:
-                st.warning(f"No results data for {selected_brand_res}")
-
-        # Excel download section
-        if st.session_state.predictions:
-            st.divider()
-            st.subheader("📥 Download Results")
-            
-            col_download1, col_download2 = st.columns(2)
-            
-            with col_download1:
-                excel_bytes = generate_excel_download(st.session_state.predictions, st.session_state.selected_period)
-                st.download_button(
-                    label="📊 Download Complete Results as Excel",
-                    data=excel_bytes,
-                    file_name=f"production_plan_{st.session_state.selected_period}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    type="primary"
-                )
-            
-            with col_download2:
-                st.info("**Excel file contains:**\n"
-                       "- Summary: Overview of all brands\n"  
-                       "- Individual Brand sheets: Detailed SKU data with comparisons\n"
-                       "- Growth Ratio: Growth rate for each SKU")
-
-st.divider()
-st.markdown("🏭 **Production Planning App** | 📊 Precise SKU-level production planning")
+    
+    with col3:
+        # Download schedule as CSV
+        schedule_data = comprehensive_analysis.get('schedule_data')
+        if schedule_data is not None and not schedule_data.empty:
+            schedule_csv = schedule_data.to_csv(index=False)
+            st.download_button(
+                label="📅 Production Schedule (CSV)",
+                data=schedule_csv,
+                file_name=f"production_schedule_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv"
+            )
