@@ -1,6 +1,3 @@
-import streamlit as st
-import pandas as pd
-import io
 import plotly.express as px
 import plotly.graph_objects as go
 
@@ -169,56 +166,87 @@ def map_categories_to_historical_brands(category_targets, historical_df):
     
     # สร้าง summary ของข้อมูลย้อนหลัง
     historical_summary = {}
-    if historical_df is not None:
-        hist_summary = historical_df.groupby('BRANDPRODUCT')['TON'].sum()
-        historical_summary = hist_summary.to_dict()
+    if historical_df is not None and not historical_df.empty:
+        try:
+            hist_summary = historical_df.groupby('BRANDPRODUCT')['TON'].sum()
+            historical_summary = hist_summary.to_dict()
+            st.write(f"📊 **Brand ที่พบในข้อมูลย้อนหลัง:** {list(historical_summary.keys())}")
+        except Exception as e:
+            st.error(f"ปัญหาในการสร้าง summary ข้อมูลย้อนหลัง: {e}")
+            historical_summary = {}
     
     brand_mapping = {}
     brand_targets_agg = {}
 
-    st.write("🔄 **การจับคู่ Categories กับ Brands:**")
+    st.write("🔄 **การจับคู่ Categories กับ Brands (หลักง่ายๆ):**")
     
-    mapping_issues = []
+    if not category_targets:
+        st.error("❌ ไม่มีข้อมูล category_targets")
+        return {}, {}
     
     for category, targets in category_targets.items():
         matching_brand = None
-        cat_lower = str(category).lower()
+        cat_lower = str(category).lower().strip()
+        
+        st.write(f"🔍 กำลังประมวลผล: '{category}'")
 
-        # การจับคู่ที่ปรับปรุงให้เหมาะกับไฟล์จริง
+        # หลักง่ายๆ: เช็ค MFG ก่อน แล้วค่อยดูประเภทสินค้า
+        # ถ้าไม่ใช่ MFG ให้ ignore
+        if 'mfg' not in cat_lower:
+            st.write(f"     ⏭️ ข้าม '{category}' เพราะไม่ใช่ MFG (การผลิต)")
+            continue  # ข้ามไปรายการถัดไป
+        
+        # ถ้าเป็น MFG แล้วให้ดูว่าเป็นประเภทไหน
         if 'scg' in cat_lower:
             if 'pipe' in cat_lower or 'conduit' in cat_lower:
-                matching_brand = 'SCG-PI'
+                matching_brand = 'SCG-PI'  # SCG Pipe
             elif 'fitting' in cat_lower:
-                matching_brand = 'SCG-FT'
-            elif 'ball valve' in cat_lower or 'valve' in cat_lower:
-                matching_brand = 'SCG-BV'
+                matching_brand = 'SCG-FT'  # SCG Fitting  
+            elif 'valve' in cat_lower:
+                matching_brand = 'SCG-BV'  # SCG Ball Valve
+            else:
+                # ถ้าไม่มี pipe, fitting, valve ให้ดู SCG อะไร
+                matching_brand = 'SCG-PI'  # default เป็น pipe
+                
         elif 'mizu' in cat_lower:
-            if 'pipe' in cat_lower or 'conduit' in cat_lower or 'c 5/8' in cat_lower or 'yellow' in cat_lower or 'grey' in cat_lower:
-                matching_brand = 'MIZU-PI'
-            elif 'fitting' in cat_lower:
-                matching_brand = 'MIZU-FT'
-        elif any(keyword in cat_lower for keyword in ['icon', 'micon', 'scala']):
-            matching_brand = 'ICON-PI'
-        elif 'fitting (trading)' in cat_lower or ('fitting' in cat_lower and 'trading' in cat_lower):
+            if 'fitting' in cat_lower:
+                matching_brand = 'MIZU-FT'  # MIZU Fitting
+            else:
+                matching_brand = 'MIZU-PI'  # MIZU Pipe (default)
+                
+        elif 'icon' in cat_lower or 'micon' in cat_lower or 'scala' in cat_lower:
+            matching_brand = 'ICON-PI'  # ICON Pipe
+            
+        elif 'pipe' in cat_lower:
+            # ถ้ามี pipe แต่ไม่ระบุแบรนด์ ให้เป็น SCG
+            matching_brand = 'SCG-PI'
+            
+        elif 'fitting' in cat_lower:
+            # ถ้ามี fitting แต่ไม่ระบุแบรนด์ ให้เป็น SCG
             matching_brand = 'SCG-FT'
-        elif 'ball valve (trading)' in cat_lower or ('valve' in cat_lower and 'trading' in cat_lower):
+            
+        elif 'valve' in cat_lower:
+            # ถ้ามี valve แต่ไม่ระบุแบรนด์ ให้เป็น SCG  
             matching_brand = 'SCG-BV'
-        elif 'solvent' in cat_lower or 'glue' in cat_lower:
-            matching_brand = 'SOLVENT'
-            mapping_issues.append(f"⚠️ {category} → {matching_brand}: ไม่มีข้อมูลย้อนหลัง (จะไม่สามารถคำนวณการกระจาย SKU ได้)")
+            
         else:
-            matching_brand = category.replace(' ', '-').replace('(', '').replace(')', '').upper()
+            # ถ้าเป็น MFG แต่ไม่ตรงอะไรเลย ให้สร้างจากชื่อ category
+            matching_brand = category.replace(' ', '-').replace('(', '').replace(')', '').replace('/', '-').upper()
+            st.warning(f"⚠️ MFG ที่ไม่พบรูปแบบที่รู้จักสำหรับ '{category}' ใช้ brand: '{matching_brand}'")
 
         brand_mapping[category] = matching_brand
         
         # ตรวจสอบว่ามีข้อมูลย้อนหลังหรือไม่
-        has_historical_data = matching_brand in historical_summary
-        historical_tonnage = historical_summary.get(matching_brand, 0)
+        has_historical_data = matching_brand in historical_summary if historical_summary else False
+        historical_tonnage = historical_summary.get(matching_brand, 0) if historical_summary else 0
         
         status_icon = "✅" if has_historical_data else "❌"
-        st.write(f"   • {category} → {matching_brand} {status_icon}")
+        st.write(f"   • **{category}** → **{matching_brand}** {status_icon}")
+        if has_historical_data:
+            st.write(f"     📊 ข้อมูลย้อนหลัง: {historical_tonnage:.2f} ตัน")
         
-        if matching_brand and matching_brand != 'SOLVENT':
+        # เพิ่มเข้าไปใน brand_targets_agg ทุก brand
+        if matching_brand:
             if matching_brand not in brand_targets_agg:
                 brand_targets_agg[matching_brand] = {
                     'mayTarget': 0,
@@ -226,12 +254,72 @@ def map_categories_to_historical_brands(category_targets, historical_df):
                     'categories': [],
                     'historicalTonnage': historical_tonnage
                 }
-            brand_targets_agg[matching_brand]['mayTarget'] += targets['mayTarget']
-            brand_targets_agg[matching_brand]['w1Target'] += targets['w1Target']
+            
+            # ตรวจสอบว่า targets มีค่าที่ถูกต้องหรือไม่
+            may_target = targets.get('mayTarget', 0) if isinstance(targets, dict) else 0
+            w1_target = targets.get('w1Target', 0) if isinstance(targets, dict) else 0
+            
+            brand_targets_agg[matching_brand]['mayTarget'] += may_target
+            brand_targets_agg[matching_brand]['w1Target'] += w1_target
             brand_targets_agg[matching_brand]['categories'].append(category)
+            
+            st.write(f"     🎯 May: {may_target}, W1: {w1_target}")
     
-    # แสดงผลสรุปและการวิเคราะหื
-    if brand_targets_agg:
+    # ตรวจสอบผลลัพธ์
+    st.write(f"\n📋 **สรุป Brand Targets ที่ได้:**")
+    if not brand_targets_agg:
+        st.error("❌ ไม่มี brand targets ที่ถูกสร้างขึ้น!")
+        return {}, {}
+    
+    for brand, targets in brand_targets_agg.items():
+        st.write(f"   • **{brand}**: May={targets['mayTarget']}, W1={targets['w1Target']}, Categories={len(targets['categories'])}")
+    
+    st.success(f"✅ สร้าง brand targets สำเร็จ! จำนวน {len(brand_targets_agg)} brands")
+    
+    # แสดงหลักการจับคู่ที่ใช้
+    st.info("""
+    **🔍 หลักการจับคู่ที่ใช้ (เฉพาะ MFG - การผลิต):**
+    
+    **✅ รวมเข้าวิเคราะหื (MFG):**
+    - **SCG + Pipe/Conduit (MFG)** → SCG-PI  
+    - **SCG + Fitting (MFG)** → SCG-FT
+    - **SCG + Valve (MFG)** → SCG-BV  
+    - **MIZU + Fitting (MFG)** → MIZU-FT
+    - **MIZU + อื่นๆ (MFG)** → MIZU-PI
+    - **ICON/MICON/SCALA (MFG)** → ICON-PI
+    - **Pipe (MFG)** → SCG-PI
+    - **Fitting (MFG)** → SCG-FT
+    - **Valve (MFG)** → SCG-BV
+    
+    **⏭️ ข้าม (ไม่ใช่ MFG):**
+    - Fitting (Trading) ❌
+    - Ball Valve (Trading) ❌  
+    - Solvent (Glue) (Trading) ❌
+    """)
+    
+    # นับจำนวนที่ข้ามไป
+    total_categories = len(category_targets)
+    processed_categories = len(brand_targets_agg)
+    skipped_categories = total_categories - processed_categories
+    
+    if skipped_categories > 0:
+        st.warning(f"⏭️ **ข้าม {skipped_categories} รายการ** ที่ไม่ใช่ MFG (เฉพาะการผลิต)")
+        
+        # แสดงรายการที่ข้าม
+        skipped_items = []
+        for cat in category_targets.keys():
+            if 'mfg' not in cat.lower():
+                skipped_items.append(cat)
+        
+        if skipped_items:
+            st.write("**รายการที่ข้าม:**")
+            for item in skipped_items:
+                st.write(f"   • {item}")
+                
+    st.success(f"✅ ประมวลผล {processed_categories} รายการ MFG จาก {total_categories} รายการทั้งหมด")
+    
+    # แสดงผลสรุปและการวิเคราะหื (ถ้ามีข้อมูลย้อนหลัง)
+    if brand_targets_agg and historical_summary:
         st.write("📊 **สรุปเป้าหมายตาม Brand และการเปรียบเทียบ:**")
         
         comparison_data = []
@@ -254,16 +342,16 @@ def map_categories_to_historical_brands(category_targets, historical_df):
         comparison_df = pd.DataFrame(comparison_data)
         st.dataframe(comparison_df)
         
-        # แสดงกราฟเปรียบเทียบ
-        st.write("📈 **กราฟเปรียบเทียบเป้าหมาย vs ข้อมูลย้อนหลัง:**")
-        
-        # เตรียมข้อมูลสำหรับกราฟ
-        brands = [item['Brand'] for item in comparison_data if item['Historical'] > 0]
-        historical = [item['Historical'] for item in comparison_data if item['Historical'] > 0]
-        may_targets = [item['May Target'] for item in comparison_data if item['Historical'] > 0]
-        w1_targets = [item['W1 Target'] for item in comparison_data if item['Historical'] > 0]
-        
-        if brands:
+        # แสดงกราฟเปรียบเทียบ (ถ้ามีข้อมูลย้อนหลัง)
+        brands_with_data = [item for item in comparison_data if item['Historical'] > 0]
+        if brands_with_data:
+            st.write("📈 **กราฟเปรียบเทียบเป้าหมาย vs ข้อมูลย้อนหลัง:**")
+            
+            brands = [item['Brand'] for item in brands_with_data]
+            historical = [item['Historical'] for item in brands_with_data]
+            may_targets = [item['May Target'] for item in brands_with_data]
+            w1_targets = [item['W1 Target'] for item in brands_with_data]
+            
             fig = go.Figure(data=[
                 go.Bar(name='Historical Data', x=brands, y=historical),
                 go.Bar(name='May Target', x=brands, y=may_targets),
@@ -295,6 +383,84 @@ def map_categories_to_historical_brands(category_targets, historical_df):
                 "- เป้าหมายที่เหมาะสมควรอยู่ในช่วง 1-3 เท่าของข้อมูลย้อนหลัง\n"
                 "- หากเป้าหมายสูงเกินไป อาจต้องปรับลดหรือเพิ่มข้อมูลย้อนหลัง\n"
                 "- Brand ที่ไม่มีข้อมูลย้อนหลังจะไม่สามารถคำนวณการกระจาย SKU ได้")
+    elif brand_targets_agg and not historical_summary:
+        st.warning("⚠️ **ไม่มีข้อมูลย้อนหลัง** - จะไม่สามารถเปรียบเทียบหรือคำนวณการกระจาย SKU ได้")
+        st.write("📋 **Brand Targets ที่ได้:**")
+        for brand, targets in brand_targets_agg.items():
+            st.write(f"   • **{brand}**: May={targets['mayTarget']}, W1={targets['w1Target']}")
+    
+    return brand_mapping, brand_targets_agg
+    
+    # แสดงผลสรุปและการวิเคราะหื (ถ้ามีข้อมูลย้อนหลัง)
+    if brand_targets_agg and historical_summary:
+        st.write("📊 **สรุปเป้าหมายตาม Brand และการเปรียบเทียบ:**")
+        
+        comparison_data = []
+        for brand, targets in brand_targets_agg.items():
+            hist_tonnage = targets['historicalTonnage']
+            may_ratio = targets['mayTarget'] / hist_tonnage if hist_tonnage > 0 else float('inf')
+            w1_ratio = targets['w1Target'] / hist_tonnage if hist_tonnage > 0 else float('inf')
+            
+            comparison_data.append({
+                'Brand': brand,
+                'May Target': targets['mayTarget'],
+                'W1 Target': targets['w1Target'],
+                'Historical': hist_tonnage,
+                'May Ratio': f"{may_ratio:.1f}x" if hist_tonnage > 0 else "N/A",
+                'W1 Ratio': f"{w1_ratio:.1f}x" if hist_tonnage > 0 else "N/A",
+                'Status': '⚠️ สูงมาก' if (may_ratio > 5 or w1_ratio > 5) and hist_tonnage > 0 else 
+                         '❌ ไม่มีข้อมูล' if hist_tonnage == 0 else '✅ ปกติ'
+            })
+        
+        comparison_df = pd.DataFrame(comparison_data)
+        st.dataframe(comparison_df)
+        
+        # แสดงกราฟเปรียบเทียบ (ถ้ามีข้อมูลย้อนหลัง)
+        brands_with_data = [item for item in comparison_data if item['Historical'] > 0]
+        if brands_with_data:
+            st.write("📈 **กราฟเปรียบเทียบเป้าหมาย vs ข้อมูลย้อนหลัง:**")
+            
+            brands = [item['Brand'] for item in brands_with_data]
+            historical = [item['Historical'] for item in brands_with_data]
+            may_targets = [item['May Target'] for item in brands_with_data]
+            w1_targets = [item['W1 Target'] for item in brands_with_data]
+            
+            fig = go.Figure(data=[
+                go.Bar(name='Historical Data', x=brands, y=historical),
+                go.Bar(name='May Target', x=brands, y=may_targets),
+                go.Bar(name='W1 Target', x=brands, y=w1_targets)
+            ])
+            fig.update_layout(
+                title='เปรียบเทียบเป้าหมาย vs ข้อมูลย้อนหลัง (ตัน)',
+                xaxis_title='Brand',
+                yaxis_title='ตัน',
+                barmode='group'
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        
+        # แสดงคำเตือนสำหรับเป้าหมายที่ผิดปกติ
+        warnings = []
+        for item in comparison_data:
+            if item['Historical'] == 0:
+                warnings.append(f"❌ **{item['Brand']}**: ไม่มีข้อมูลย้อนหลัง - ไม่สามารถคำนวณการกระจาย SKU ได้")
+            elif 'สูงมาก' in item['Status']:
+                warnings.append(f"⚠️ **{item['Brand']}**: เป้าหมายสูงมาก ({item['May Ratio']}, {item['W1 Ratio']}) - กรุณาตรวจสอบความถูกต้อง")
+        
+        if warnings:
+            st.warning("**คำเตือน:**")
+            for warning in warnings:
+                st.write(warning)
+        
+        # แสดงคำแนะนำ
+        st.info("**💡 คำแนะนำ:**\n"
+                "- เป้าหมายที่เหมาะสมควรอยู่ในช่วง 1-3 เท่าของข้อมูลย้อนหลัง\n"
+                "- หากเป้าหมายสูงเกินไป อาจต้องปรับลดหรือเพิ่มข้อมูลย้อนหลัง\n"
+                "- Brand ที่ไม่มีข้อมูลย้อนหลังจะไม่สามารถคำนวณการกระจาย SKU ได้")
+    elif brand_targets_agg and not historical_summary:
+        st.warning("⚠️ **ไม่มีข้อมูลย้อนหลัง** - จะไม่สามารถเปรียบเทียบหรือคำนวณการกระจาย SKU ได้")
+        st.write("📋 **Brand Targets ที่ได้:**")
+        for brand, targets in brand_targets_agg.items():
+            st.write(f"   • **{brand}**: May={targets['mayTarget']}, W1={targets['w1Target']}")
     
     return brand_mapping, brand_targets_agg
 
@@ -572,23 +738,60 @@ with tab1:
         type="primary"
     ):
         with st.spinner("กำลังประมวลผลและสร้างการคาดการณ์..."):
-            if st.session_state.brand_targets_agg is None: 
-                _, st.session_state.brand_targets_agg = map_categories_to_historical_brands(
-                    st.session_state.category_targets, 
-                    st.session_state.historical_df
-                )
+            try:
+                # ตรวจสอบข้อมูลก่อนการประมวลผล
+                if st.session_state.category_targets is None:
+                    st.error("❌ ไม่พบข้อมูล category_targets")
+                    st.stop()
+                
+                if st.session_state.historical_df is None:
+                    st.error("❌ ไม่พบข้อมูล historical_df")
+                    st.stop()
+                
+                st.write(f"📊 จำนวน categories: {len(st.session_state.category_targets)}")
+                st.write(f"📈 จำนวนข้อมูลย้อนหลัง: {len(st.session_state.historical_df)}")
+                
+                # สร้าง brand mapping
+                if st.session_state.brand_targets_agg is None:
+                    st.write("🔄 กำลังสร้าง brand mapping...")
+                    _, st.session_state.brand_targets_agg = map_categories_to_historical_brands(
+                        st.session_state.category_targets, 
+                        st.session_state.historical_df
+                    )
 
-            if st.session_state.brand_targets_agg:
+                # ตรวจสอบผลลัพธ์ของ brand mapping
+                if not st.session_state.brand_targets_agg:
+                    st.error("❌ ไม่สามารถสร้าง brand targets ได้ - กรุณาตรวจสอบข้อมูล")
+                    st.write("**สาเหตุที่เป็นไปได้:**")
+                    st.write("1. การจับคู่ categories กับ brands ไม่สำเร็จ")
+                    st.write("2. ข้อมูล categories หรือ targets มีปัญหา")
+                    st.write("3. รูปแบบไฟล์ไม่ถูกต้อง")
+                    st.stop()
+                
+                st.write(f"✅ สร้าง brand targets สำเร็จ: {len(st.session_state.brand_targets_agg)} brands")
+                
+                # สร้างการคาดการณ์
+                st.write("🎯 กำลังสร้างการคาดการณ์...")
                 st.session_state.predictions, _ = predict_sku_distribution(
                     st.session_state.brand_targets_agg, 
                     st.session_state.historical_df
                 )
-                st.success("🎉 การสร้างการกระจาย SKU เสร็จสมบูรณ์! กรุณาไปที่แท็บ 'การวิเคราะห์' หรือ 'ผลลัพธ์'")
+                
                 if st.session_state.predictions:
+                    st.success("🎉 การสร้างการกระจาย SKU เสร็จสมบูรณ์! กรุณาไปที่แท็บ 'การวิเคราะห์' หรือ 'ผลลัพธ์'")
                     st.session_state.selected_brand = next(iter(st.session_state.predictions), None)
                     st.balloons()
-            else:
-                st.error("❌ ไม่สามารถ map categories กับ brands ได้ หรือไม่มีข้อมูล brand targets")
+                else:
+                    st.warning("⚠️ สร้างการคาดการณ์เสร็จแล้ว แต่ไม่มีผลลัพธ์ที่ใช้งานได้")
+                    
+            except Exception as e:
+                st.error(f"❌ เกิดข้อผิดพลาดในการประมวลผล: {e}")
+                import traceback
+                st.error(f"รายละเอียด: {traceback.format_exc()}")
+                st.write("**วิธีแก้ไข:**")
+                st.write("1. ตรวจสอบรูปแบบไฟล์ให้ถูกต้อง")
+                st.write("2. อัปโหลดไฟล์ใหม่อีกครั้ง")
+                st.write("3. ตรวจสอบว่าไฟล์มีข้อมูลครบถ้วน")
 
 # Common functions
 def create_period_selector(widget_key):
